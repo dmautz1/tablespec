@@ -6,8 +6,15 @@ renderers so alias handling and error text stay consistent across call sites.
 
 from __future__ import annotations
 
+import os
+
 CAST_DIALECTS: tuple[str, ...] = ("spark", "databricks", "duckdb")
-PROFILE_TARGETS: tuple[str, ...] = ("duckdb", "spark", "databricks")
+PROFILE_TARGETS: tuple[str, ...] = (
+    "duckdb",
+    "spark",
+    "databricks",
+    "databricks_notebook",
+)
 
 
 def _format_accepted_values(values: tuple[str, ...]) -> str:
@@ -39,3 +46,48 @@ def validate_profile_target(target: str) -> str:
             _unsupported_value_message("profile target", target, PROFILE_TARGETS)
         )
     return target
+
+
+def is_databricks_runtime() -> bool:
+    """Detect a Databricks runtime (cluster / notebook) strictly.
+
+    Deliberately checks ONLY ``DATABRICKS_RUNTIME_VERSION`` (set by every
+    Databricks runtime) -- no ``SPARK_HOME`` heuristics -- so emit defaults can
+    never flip on a false positive. Also deliberately NOT delegated to
+    ``tablespec.spark_factory`` (whose import mutates env/warning state).
+    """
+    return "DATABRICKS_RUNTIME_VERSION" in os.environ
+
+
+def resolve_emit_defaults(
+    dialect: str | None, target: str | None
+) -> tuple[str, str]:
+    """Resolve the (cast dialect, profile target) pair for a dbt emission.
+
+    Explicit values always win (validated, passed through). Unspecified values
+    default by environment:
+
+      * off Databricks: dialect ``"duckdb"``, target mirrors the dialect --
+        byte-identical to the historical defaults.
+      * on a Databricks runtime (:func:`is_databricks_runtime`): dialect
+        ``"databricks"`` and, for spark-family dialects, the runnable
+        ``"databricks_notebook"`` session target so the emitted project runs
+        against the notebook's active SparkSession.
+
+    Returns:
+        ``(dialect, target)`` -- both validated members of
+        :data:`CAST_DIALECTS` / :data:`PROFILE_TARGETS`.
+    """
+    on_databricks = is_databricks_runtime()
+
+    if dialect is None:
+        dialect = "databricks" if on_databricks else "duckdb"
+    elif dialect not in CAST_DIALECTS:
+        raise ValueError(_unsupported_value_message("dialect", dialect, CAST_DIALECTS))
+
+    if target is None:
+        spark_family = dialect in ("spark", "databricks")
+        target = (
+            "databricks_notebook" if (on_databricks and spark_family) else dialect
+        )
+    return dialect, validate_profile_target(target)

@@ -200,6 +200,6 @@ def test_contracts_module_imports_no_dbt() -> None:
 def test_profiles_yml_rejects_unknown_target() -> None:
     with pytest.raises(
         ValueError,
-        match=r"Unsupported profile target: 'postgres' \(expected one of duckdb, spark, databricks\)",
+        match=r"Unsupported profile target: 'postgres' \(expected one of duckdb, spark, databricks, databricks_notebook\)",
     ):
         render_profiles_yml("tablespec_ingest", target="postgres")

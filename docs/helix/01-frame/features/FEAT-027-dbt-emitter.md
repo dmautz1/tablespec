@@ -226,8 +226,11 @@ build. (`src/tablespec/cli.py`)
   native in GX (ADR-008).
 - dbt-utils / dbt-expectations package adoption (deliberately avoided; ADR-008).
 - LDP and direct-SQL emitters (FR-19.3 / FR-19.4 — separate features).
-- A Databricks dbt *run* target — the runnable `DbtRunner` target is duckdb only; the
-  spark/databricks dialects stay compile-only / conformance-lane (ADR-008 / phase-4 eval).
+- A Databricks SQL-warehouse dbt *run* target — the `databricks` profile target stays
+  compile-only / conformance-lane (ADR-008 / phase-4 eval). Carve-out: the
+  `databricks_notebook` profile target (dbt-spark `method: session`) IS runnable — it is the
+  auto-selected default when emitting on a Databricks runtime, and `DbtRunner` invokes dbt
+  in-process there so the emitted project runs against the notebook's active SparkSession.
 
 ## Review Checklist
 

@@ -42,6 +42,7 @@ from tablespec.dbt.registry import NodeRegistry, NodeRegistryError
 from tablespec.dbt.renderer import DbtRefRenderer
 from tablespec.dbt.routing import RoutingPolicy
 from tablespec.dbt.schema_tests import render_tests_for_column
+from tablespec.dialects import resolve_emit_defaults
 from tablespec.models.umf import UMF
 from tablespec.schemas.ingest_generator import build_ingest_select
 from tablespec.schemas.sql_generator import SQLPlanGenerator
@@ -56,7 +57,9 @@ class DbtProjectError(ValueError):
 # ---------------------------------------------------------------------------
 
 
-def _config_block(mat: Materialization, *, contract: bool = False) -> str:
+def _config_block(
+    mat: Materialization, *, contract: bool = False, file_format: str | None = None
+) -> str:
     """Render the dbt ``{{ config(...) }}`` block for a materialization.
 
     When ``contract`` is set, the block opts the model into an ENFORCED data
@@ -70,6 +73,8 @@ def _config_block(mat: Materialization, *, contract: bool = False) -> str:
     lines.append(f"        materialized='{mat.strategy}',")
     if mat.incremental_strategy:
         lines.append(f"        incremental_strategy='{mat.incremental_strategy}',")
+    if file_format:
+        lines.append(f"        file_format='{file_format}',")
     if mat.unique_key:
         keys = ", ".join(f'"{k}"' for k in mat.unique_key)
         lines.append(f"        unique_key=[{keys}],")
@@ -82,6 +87,21 @@ def _config_block(mat: Materialization, *, contract: bool = False) -> str:
     lines.append("    )")
     lines.append("}}")
     return "\n".join(lines)
+
+
+def _merge_file_format(mat: Materialization, dialect: str) -> str | None:
+    """Pin ``file_format='delta'`` for spark-family incremental MERGE models.
+
+    dbt-spark / dbt-databricks REJECT ``incremental_strategy='merge'`` unless the
+    relation's file_format is delta/iceberg/hudi (Spark's default is parquet), so
+    a merge model would never materialize on those adapters. Mirrors the same
+    rule in :mod:`tablespec.dbt.single_table`; duckdb has no file_format concept,
+    so the key is omitted there to keep the config minimal/portable.
+    """
+    spark_family = dialect in ("spark", "databricks")
+    if spark_family and mat.incremental_strategy == "merge":
+        return "delta"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +120,9 @@ def _staging_model_sql(
     umf_data = umf.model_dump(exclude_none=True)
     ingest = build_ingest_select(umf_data, dialect=dialect)
     source = routing.source_literal(f"raw_{umf.table_name}")
-    config = _config_block(mat, contract=True)
+    config = _config_block(
+        mat, contract=True, file_format=_merge_file_format(mat, dialect)
+    )
 
     if ingest.has_dedup:
         body = (
@@ -134,6 +156,8 @@ def _gold_model_sql(
     registry: NodeRegistry,
     mat: Materialization,
     routing: RoutingPolicy,
+    *,
+    dialect: str,
 ) -> str:
     """Render a ``gold_<t>`` model: the SQLPlanGenerator plan collapsed to CTEs.
 
@@ -159,7 +183,7 @@ def _gold_model_sql(
     # A dbt model body is a single SELECT with NO terminating ';' (dbt wraps it in
     # a CREATE ... AS ( ... )); strip the statement terminator the CTE emitter adds.
     plan_sql = plan_sql.rstrip().rstrip(";")
-    config = _config_block(mat)
+    config = _config_block(mat, file_format=_merge_file_format(mat, dialect))
     return f"{config}\n\n{plan_sql.rstrip()}\n"
 
 
@@ -354,7 +378,7 @@ def _profiles_yml(project_name: str, *, target: str = "duckdb") -> str:
 def generate_dbt_dag_project(
     umfs: list[UMF],
     *,
-    dialect: str = "duckdb",
+    dialect: str | None = None,
     target: str | None = None,
     out_dir: str | Path | None = None,
     project_name: str = "tablespec_gold",
@@ -370,12 +394,14 @@ def generate_dbt_dag_project(
 
     Args:
         umfs: the table set (UMF models).
-        dialect: cast dialect for staging models (``"duckdb"`` default; also
-            ``"spark"`` / ``"databricks"``).
-        target: profiles.yml adapter target (``"duckdb"`` | ``"spark"`` |
-            ``"databricks"``). Defaults to mirror *dialect*, mapping the
-            cast-equivalent ``"databricks"`` dialect onto the databricks target and
-            ``"spark"`` onto the local session target. Pass explicitly to decouple
+        dialect: cast dialect for staging models (``"duckdb"`` | ``"spark"`` |
+            ``"databricks"``). ``None`` (default) resolves via
+            :func:`tablespec.dialects.resolve_emit_defaults`: ``"duckdb"``
+            locally, ``"databricks"`` on a Databricks runtime.
+        target: profiles.yml adapter target (one of ``PROFILE_TARGETS``).
+            ``None`` (default) mirrors *dialect* locally; on a Databricks runtime
+            a spark-family dialect defaults to the runnable
+            ``"databricks_notebook"`` session target. Pass explicitly to decouple
             (e.g. dialect=``"spark"`` cast SQL run against a databricks target).
         out_dir: if given, files are also written under this directory.
         project_name: dbt project + profile name.
@@ -391,9 +417,9 @@ def generate_dbt_dag_project(
     """
     routing = routing or RoutingPolicy()
     policy = materialization or MaterializationPolicy()
-    # Default the profile target to the cast dialect (databricks/spark dialects are
-    # cast-identical and each has a real adapter target of the same name).
-    profile_target = target if target is not None else dialect
+    # Unspecified dialect/target resolve by environment (duckdb locally; the
+    # runnable databricks-notebook session lane on a Databricks runtime).
+    dialect, profile_target = resolve_emit_defaults(dialect, target)
 
     try:
         registry = NodeRegistry(list(umfs))
@@ -451,7 +477,7 @@ def generate_dbt_dag_project(
         node = registry.plan.nodes[f"gold_{umf.table_name}"]
         mat = policy.for_node(node, registry.plan, table_name=umf.table_name)
         files[f"models/marts/gold_{umf.table_name}.sql"] = _gold_model_sql(
-            umf, registry, mat, routing
+            umf, registry, mat, routing, dialect=dialect
         )
 
     if out_dir is not None:

@@ -232,6 +232,31 @@ from tablespec.ldp import generate_ldp_project
 The supported split today is still composition, not a separate `tablespec compile`
 CLI facade.
 
+### Run an emitted dbt project from a Databricks notebook
+
+On a Databricks runtime (detected via `DATABRICKS_RUNTIME_VERSION`) the dbt
+emitters default to `dialect="databricks"` and the runnable
+`databricks_notebook` profile target — a dbt-spark `method: session` profile that
+attaches to the notebook's active SparkSession, so no host/http_path/token is
+needed. `DbtRunner` also defaults to invoking dbt **in-process** there (a
+subprocess dbt would build its own SparkSession instead of attaching). Reuse one
+runner instance per notebook session; dbt's programmatic entrypoint mutates
+global logging state on each invoke.
+
+```python
+# In a Databricks notebook (requires dbt-core + dbt-spark[session]):
+from tablespec.dbt import DbtRunner
+
+runner = DbtRunner()
+project = runner.emit(umfs, "/tmp/tablespec_dbt")  # defaults resolve to databricks
+result = runner.build(project)                     # runs in-process, session method
+assert result.success, result.stderr
+```
+
+Off-Databricks nothing changes: the defaults stay `duckdb`/`duckdb`, and explicit
+`dialect=`/`target=` arguments always win (e.g. `target="databricks_notebook"` to
+emit the session profile from anywhere).
+
 ## 7. Run the generated pipelines
 
 Use the runtime backbone to execute the committed artifacts that `compile_umfs(...)`

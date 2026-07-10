@@ -41,6 +41,7 @@ from tablespec.dbt.contracts import (
 )
 from tablespec.dbt.profiles import render_profiles_yml as _render_profiles_yml
 from tablespec.dbt.schema_tests import render_tests_for_column
+from tablespec.dialects import resolve_emit_defaults
 from tablespec.models.umf import UMF
 from tablespec.schemas.ingest_generator import (
     IngestSelect,
@@ -305,8 +306,8 @@ def _profiles_yml(project_name: str, *, target: str = "duckdb") -> str:
     Delegates to the shared :func:`render_profiles_yml`. The DuckDB ``path`` is a
     placeholder runners override via ``DBT_DUCKDB_PATH``; the session is pinned to
     UTC so TIMESTAMP rendering is host-timezone independent and matches the Spark
-    baseline. The ``spark`` (local session) and ``databricks`` (compile-only)
-    targets are also selectable for the conformance harness.
+    baseline. The ``spark`` (local session), ``databricks`` (compile-only), and
+    ``databricks_notebook`` (notebook session) targets are also selectable.
     """
     return _render_profiles_yml(
         project_name, target=target, duckdb_path_default="ingest.duckdb"
@@ -322,7 +323,7 @@ def _yaml_scalar(value: str) -> str:
 def generate_dbt_project(
     umf_data: dict[str, Any],
     *,
-    dialect: str = "duckdb",
+    dialect: str | None = None,
     target: str | None = None,
     out_dir: str | Path | None = None,
     project_name: str = "tablespec_ingest",
@@ -338,11 +339,14 @@ def generate_dbt_project(
     Args:
     ----
         umf_data: UMF table data (e.g. ``umf.model_dump(exclude_none=True)``).
-        dialect: SQL dialect for the cast expressions; defaults to ``"duckdb"``
-            (also ``"spark"`` / ``"databricks"``).
-        target: profiles.yml adapter target (``"duckdb"`` | ``"spark"`` |
-            ``"databricks"``). Defaults to mirror *dialect* (the spark/databricks
-            dialects are cast-equivalent and each has a same-named adapter target).
+        dialect: SQL dialect for the cast expressions (``"duckdb"`` | ``"spark"``
+            | ``"databricks"``). ``None`` (default) resolves via
+            :func:`tablespec.dialects.resolve_emit_defaults`: ``"duckdb"``
+            locally, ``"databricks"`` on a Databricks runtime.
+        target: profiles.yml adapter target (one of ``PROFILE_TARGETS``).
+            ``None`` (default) mirrors *dialect* locally; on a Databricks runtime
+            a spark-family dialect defaults to the runnable
+            ``"databricks_notebook"`` session target.
         out_dir: If given, the returned files are also written under this directory.
         project_name: dbt project + profile name.
         related: Optional sibling tables (as :class:`UMF`). Each is emitted as its
@@ -363,6 +367,10 @@ def generate_dbt_project(
         A mapping of ``{relative_path: file_contents}`` for the whole project.
 
     """
+    # Unspecified dialect/target resolve by environment (duckdb locally; the
+    # runnable databricks-notebook session lane on a Databricks runtime).
+    dialect, profile_target = resolve_emit_defaults(dialect, target)
+
     # Emit the primary table PLUS every related sibling as its own model, so a FK
     # ``relationships`` test that resolves to ``ref('<parent>')`` points at a model
     # dbt actually builds. Emitting only the child (with the parent merely known to
@@ -383,7 +391,6 @@ def generate_dbt_project(
     emitted_tables = [t for _, t, _ in emitted]
     resolver = _emitted_resolver(emitted_tables)
 
-    profile_target = target if target is not None else dialect
     files: dict[str, str] = {
         "dbt_project.yml": _dbt_project_yml(project_name),
         "profiles.yml": _profiles_yml(project_name, target=profile_target),

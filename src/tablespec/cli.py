@@ -30,7 +30,7 @@ import typer
 
 from tablespec.excel_converter import ExcelToUMFConverter, UMFToExcelConverter
 from tablespec.inference.domain_types import DomainTypeInference, DomainTypeRegistry
-from tablespec.dialects import CAST_DIALECTS
+from tablespec.dialects import CAST_DIALECTS, PROFILE_TARGETS, resolve_emit_defaults
 from tablespec.umf_loader import UMFFormat, UMFLoader
 
 # validator module is not yet ported; commands that depend on it will be
@@ -55,7 +55,12 @@ app = typer.Typer(
 console = Console(no_color=bool(os.environ.get("NO_COLOR")))
 _EMIT_DIALECT_HELP = (
     "Cast dialect for emitted models (duckdb, spark, databricks); "
-    "databricks is the Databricks-facing alias for Spark-family cast SQL"
+    "databricks is the Databricks-facing alias for Spark-family cast SQL. "
+    "Default: duckdb, or databricks when running on a Databricks runtime"
+)
+_EMIT_TARGET_HELP = (
+    "profiles.yml adapter target. Default: mirrors --dialect, or the runnable "
+    "databricks_notebook session target when running on a Databricks runtime"
 )
 
 # Module-level validation context (process lifetime caching) - only when validator is available
@@ -524,11 +529,17 @@ def emit(
         "--project-name",
         help="dbt project + profile name (default depends on single/multi table)",
     ),
-    dialect: str = typer.Option(
-        "duckdb",
+    dialect: str | None = typer.Option(
+        None,
         "--dialect",
         help=_EMIT_DIALECT_HELP,
         click_type=click.Choice(CAST_DIALECTS),
+    ),
+    target: str | None = typer.Option(
+        None,
+        "--target",
+        help=_EMIT_TARGET_HELP,
+        click_type=click.Choice(PROFILE_TARGETS),
     ),
     run: bool = typer.Option(
         False,
@@ -560,12 +571,16 @@ def emit(
             umfs = [loader.load(source)]
 
         emitter = get_emitter(backend)
+        # Resolve here purely for display; the generators apply the SAME
+        # resolution, so what we print is what gets emitted.
+        resolved_dialect, resolved_target = resolve_emit_defaults(dialect, target)
         console.print(
             f"[cyan]Emitting[/cyan] {backend} project for "
-            f"{len(umfs)} table(s) -> {out_dir}"
+            f"{len(umfs)} table(s) -> {out_dir} "
+            f"(dialect={resolved_dialect}, target={resolved_target})"
         )
         project = emitter.emit(
-            umfs, out_dir, project_name=project_name, dialect=dialect
+            umfs, out_dir, project_name=project_name, dialect=dialect, target=target
         )
         console.print(
             f"[green]Emitted[/green] {len(project.files)} files "

@@ -67,9 +67,16 @@ class Emitter(ABC):
         out_dir: str | Path,
         *,
         project_name: str | None = None,
-        dialect: str = "duckdb",
+        dialect: str | None = None,
+        target: str | None = None,
     ) -> EmittedProject:
-        """Materialize a runnable project for *umfs* under *out_dir*."""
+        """Materialize a runnable project for *umfs* under *out_dir*.
+
+        ``dialect``/``target`` default to ``None`` and are resolved by the
+        backend generators (:func:`tablespec.dialects.resolve_emit_defaults`
+        for dbt): duckdb locally, the runnable databricks-notebook session
+        lane on a Databricks runtime.
+        """
         raise NotImplementedError
 
 
@@ -91,7 +98,8 @@ class DbtEmitter(Emitter):
         out_dir: str | Path,
         *,
         project_name: str | None = None,
-        dialect: str = "duckdb",
+        dialect: str | None = None,
+        target: str | None = None,
     ) -> EmittedProject:
         umfs = list(umfs)
         if not umfs:
@@ -104,6 +112,7 @@ class DbtEmitter(Emitter):
             files = generate_dbt_project(
                 umfs[0].model_dump(exclude_none=True),
                 dialect=dialect,
+                target=target,
                 out_dir=out,
                 project_name=name,
             )
@@ -112,6 +121,7 @@ class DbtEmitter(Emitter):
             files = generate_dbt_dag_project(
                 umfs,
                 dialect=dialect,
+                target=target,
                 out_dir=out,
                 project_name=name,
             )

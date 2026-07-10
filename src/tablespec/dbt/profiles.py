@@ -1,6 +1,6 @@
 """Render a parametrized dbt ``profiles.yml`` for the conformance harness.
 
-A single source of truth for the three adapter targets the generated dbt projects
+A single source of truth for the adapter targets the generated dbt projects
 can execute against. Each target maps to a real, installable dbt adapter:
 
   * ``duckdb``     -- in-process DuckDB (the default; no JVM, no cluster).
@@ -11,6 +11,14 @@ can execute against. Each target maps to a real, installable dbt adapter:
   * ``databricks`` -- COMPILE-ONLY here (no cluster). Connection params come from
                       ``env_var`` defaults so ``dbt compile`` works without a live
                       workspace; ``dbt run`` would require a real Databricks target.
+  * ``databricks_notebook`` -- RUNNABLE from a Databricks notebook: ``dbt-spark``
+                      ``method: session`` attaches to the notebook's already-active
+                      SparkSession, so no host/http_path/token is needed. This is
+                      the auto-selected default target when emitting on a
+                      Databricks runtime (see ``tablespec.dialects
+                      .resolve_emit_defaults``). Run dbt IN-PROCESS on the driver
+                      (``DbtRunner`` does this on Databricks) -- a subprocess would
+                      spin up its own SparkSession instead of attaching.
 
 The casts themselves are dialect-equivalent: Databricks SQL == Spark SQL for our
 ``try_to_timestamp`` + Java-token date casts, so a Databricks model reuses the
@@ -33,7 +41,7 @@ def render_profiles_yml(
     target: str = "duckdb",
     duckdb_path_default: str = "gold.duckdb",
 ) -> str:
-    """Render ``profiles.yml`` for *target* (``duckdb`` | ``spark`` | ``databricks``).
+    """Render ``profiles.yml`` for *target* (one of :data:`PROFILE_TARGETS`).
 
     Args:
         project_name: the dbt profile + project name.
@@ -56,9 +64,14 @@ def render_profiles_yml(
             "      settings:\n"
             "        TimeZone: 'UTC'\n"
         )
-    elif target == "spark":
-        # Local embedded Spark session (dbt-spark[session]); no cluster / Thrift.
-        # The warehouse dir + metastore are isolated per run by the caller.
+    elif target in ("spark", "databricks_notebook"):
+        # dbt-spark[session]: attach to the interpreter's active SparkSession.
+        #   * spark               -- LOCAL embedded session (conformance lane); the
+        #     warehouse dir + metastore are isolated per run by the caller.
+        #   * databricks_notebook -- the notebook's cluster session; run dbt
+        #     in-process on the driver so the session is actually shared.
+        # `host` is required by dbt-spark profile validation but ignored by the
+        # session method.
         body = (
             "      type: spark\n"
             "      method: session\n"

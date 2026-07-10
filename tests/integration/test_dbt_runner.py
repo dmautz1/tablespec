@@ -34,6 +34,18 @@ from tablespec.dbt import DbtRunner, get_emitter  # noqa: E402
 from tablespec.dbt.emitter import DbtEmitter, EmittedProject  # noqa: E402
 from tablespec.models.umf import UMF  # noqa: E402
 
+
+@pytest.fixture(autouse=True)
+def _force_local_emit_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the duckdb subprocess lane even when the suite runs on Databricks.
+
+    Both the emit defaults (``tablespec.dialects.resolve_emit_defaults``) and
+    ``DbtRunner``'s in-process-vs-subprocess choice key off
+    ``DATABRICKS_RUNTIME_VERSION``; this e2e explicitly exercises the duckdb
+    subprocess path.
+    """
+    monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
+
 # A self-contained UMF exercising the declared casts: an INTEGER PK, a DECIMAL, a
 # DATE (the cast under test -- NULL-on-failure), and a not-null VARCHAR.
 _UMF_YAML = """

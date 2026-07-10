@@ -28,6 +28,17 @@ pytestmark = [pytest.mark.no_spark]
 GOLDEN_DIR = Path(__file__).parent / "golden"
 
 
+@pytest.fixture(autouse=True)
+def _force_local_emit_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin emit defaults to the local (duckdb) lane.
+
+    Unspecified dialect/target resolve by environment
+    (``tablespec.dialects.resolve_emit_defaults``); golden text must stay
+    deterministic even when the suite runs on a Databricks cluster.
+    """
+    monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
+
+
 def _discover_cases(subdir: str, expected_ext: str) -> list[tuple[str, Path, Path]]:
     """Discover golden test cases in a subdirectory.
 
