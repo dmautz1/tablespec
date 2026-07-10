@@ -23,6 +23,7 @@ has no dbt dependency.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 from tablespec.core.ir import NodeRole
@@ -38,6 +39,11 @@ from tablespec.dbt.contracts import (
 )
 from tablespec.dbt.materialization import Materialization, MaterializationPolicy
 from tablespec.dbt.profiles import PROFILE_TARGETS, render_profiles_yml
+from tablespec.dbt.raw_models import (
+    file_backed_source,
+    render_raw_model_sql,
+    supports_raw_file_models,
+)
 from tablespec.dbt.registry import NodeRegistry, NodeRegistryError
 from tablespec.dbt.renderer import DbtRefRenderer
 from tablespec.dbt.routing import RoutingPolicy
@@ -119,7 +125,7 @@ def _staging_model_sql(
     """Render an ``ingested_<t>`` staging model body (raw -> typed cast SELECT)."""
     umf_data = umf.model_dump(exclude_none=True)
     ingest = build_ingest_select(umf_data, dialect=dialect)
-    source = routing.source_literal(f"raw_{umf.table_name}")
+    source = routing.raw_literal(f"raw_{umf.table_name}")
     config = _config_block(
         mat, contract=True, file_format=_merge_file_format(mat, dialect)
     )
@@ -192,24 +198,38 @@ def _gold_model_sql(
 # ---------------------------------------------------------------------------
 
 
-def _sources_yml(registry: NodeRegistry, routing: RoutingPolicy) -> str:
+def _sources_yml(registry: NodeRegistry, routing: RoutingPolicy) -> str | None:
     """Declare the local ``raw_<t>`` landing tables and any external relations.
 
     Two source groups: ``raw`` (this pipeline's all-STRING landing tables) and --
     only when present -- ``external`` (explicitly cross-pipeline references that
     fail-open by design to a ``source('external', ...)`` leaf).
+
+    Raw nodes emitted as file-reading MODELS (``routing.model_backed_raw``) are
+    excluded -- their edges are ``ref()``, not ``source()``. Returns ``None``
+    when nothing is left to declare (the project then has no sources.yml).
     """
     nodes = sorted(registry.plan.nodes.values(), key=lambda n: n.node_id)
-    raw_nodes = [n for n in nodes if n.role is NodeRole.SOURCE and not n.external]
+    raw_nodes = [
+        n
+        for n in nodes
+        if n.role is NodeRole.SOURCE
+        and not n.external
+        and n.node_id not in routing.model_backed_raw
+    ]
     ext_nodes = [n for n in nodes if n.role is NodeRole.SOURCE and n.external]
+    if not raw_nodes and not ext_nodes:
+        return None
 
-    lines = ["version: 2", "", "sources:", f"  - name: {routing.source_name}"]
-    if routing.raw_database:
-        lines.append(f"    database: {routing.raw_database}")
-    lines.append(f"    schema: {routing.raw_schema}")
-    lines.append("    tables:")
-    for node in raw_nodes:
-        lines.append(f"      - name: {node.node_id}")
+    lines = ["version: 2", "", "sources:"]
+    if raw_nodes:
+        lines.append(f"  - name: {routing.source_name}")
+        if routing.raw_database:
+            lines.append(f"    database: {routing.raw_database}")
+        lines.append(f"    schema: {routing.raw_schema}")
+        lines.append("    tables:")
+        for node in raw_nodes:
+            lines.append(f"      - name: {node.node_id}")
 
     if ext_nodes:
         lines.append("  - name: external")
@@ -447,12 +467,30 @@ def generate_dbt_dag_project(
         msg = "UMF dependency graph has a cycle: " + " -> ".join(cycle)
         raise DbtProjectError(msg)
 
+    # File-backed landing tables (delimited source with a path, dialect can read
+    # files) become raw_<t> MODELS; their edges render as ref() via the routing
+    # policy, and they drop out of sources.yml (see tablespec.dbt.raw_models).
+    file_sources = {
+        umf.table_name: src
+        for umf in registry.all_umfs()
+        if umf.table_name in registry.staging_tables
+        and supports_raw_file_models(dialect)
+        and (src := file_backed_source(umf))
+    }
+    routing = dataclasses.replace(
+        routing,
+        model_backed_raw=routing.model_backed_raw
+        | {f"raw_{t}" for t in file_sources},
+    )
+
     files: dict[str, str] = {
         "dbt_project.yml": _dbt_project_yml(project_name),
         "profiles.yml": _profiles_yml(project_name, target=profile_target),
-        "models/sources.yml": _sources_yml(registry, routing),
         "models/schema.yml": _schema_yml(registry, dialect=dialect),
     }
+    sources_yml = _sources_yml(registry, routing)
+    if sources_yml is not None:
+        files["models/sources.yml"] = sources_yml
 
     # Staging models (one per real landing table; pure-gold tables have none).
     for umf in registry.all_umfs():
@@ -466,6 +504,13 @@ def generate_dbt_dag_project(
         mat = policy.for_ingested(
             mode=mode, primary_key=umf_data.get("primary_key") or []
         )
+        if umf.table_name in file_sources:
+            files[f"models/staging/raw_{umf.table_name}.sql"] = render_raw_model_sql(
+                umf.table_name,
+                file_sources[umf.table_name],
+                [c["name"] for c in umf_data["columns"]],
+                dialect=dialect,
+            )
         files[f"models/staging/ingested_{umf.table_name}.sql"] = _staging_model_sql(
             umf, mat, routing, dialect=dialect
         )

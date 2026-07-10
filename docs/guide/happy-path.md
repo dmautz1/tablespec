@@ -257,6 +257,22 @@ Off-Databricks nothing changes: the defaults stay `duckdb`/`duckdb`, and explici
 `dialect=`/`target=` arguments always win (e.g. `target="databricks_notebook"` to
 emit the session profile from anywhere).
 
+### File-backed raw landing: let dbt ingest the source file itself
+
+By default the emitted projects declare raw inputs as dbt sources and expect the
+all-STRING `raw_<t>` landing tables to be created upstream. When a UMF pins its
+input file — `source: {kind: delimited, path: /Volumes/.../t.csv}` — the
+`databricks` and `duckdb` dialects instead emit `raw_<t>` as a **file-reading dbt
+model** (`read_files(...)` on Databricks, `read_csv(...)` on DuckDB), so
+`dbt build` performs the raw landing itself: file → all-STRING `raw_<t>` (plus
+the `_source_file`/`_load_ts` meta columns) → typed cast model, all in one run.
+Those tables drop out of `sources.yml` (the file is omitted entirely when every
+table is file-backed) and the cast models consume `{{ ref('raw_<t>') }}`.
+Path-less UMFs, the plain `spark` dialect, and sources carrying reader options
+the file functions cannot express (`header: false`, `skip_rows`, footers,
+comment/escape characters, non-UTF-8 encodings) keep the classic source
+declaration unchanged.
+
 ## 7. Run the generated pipelines
 
 Use the runtime backbone to execute the committed artifacts that `compile_umfs(...)`

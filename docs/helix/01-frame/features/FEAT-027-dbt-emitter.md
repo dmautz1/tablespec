@@ -62,6 +62,7 @@ FR-18/FR-19 into dbt artifacts.
 | CI selection + seeds | "Build/test only impacted models; smoke-test with fixtures" | Map a UMF diff `ChangeSet` to a `--select` expression; emit `sample_data` CSVs as dbt seeds |
 | Dependency packaging | "Generate without forcing dbt on consumers" | Keep all emission pure-Python (no `import dbt`); confine dbt to the dev/test group |
 | Opt-in runnable target | "Emit a project for a backend and actually run it" | `get_emitter(backend)` materializes a runnable project; `DbtRunner` runs it via dbt-duckdb; CLI `emit --backend dbt [--run]` |
+| File-backed raw landing | "Let `dbt build` ingest the declared source file itself" | When a UMF declares `source: {kind: delimited, path: ...}` and the dialect can read files (`databricks` via `read_files`, `duckdb` via `read_csv`), emit `raw_<t>` as a file-reading model (all-STRING + `_source_file`/`_load_ts`) referenced via `ref()`; path-less UMFs, the `spark` dialect, and unexpressible reader knobs keep the `sources.yml` declaration |
 
 ## Requirements
 

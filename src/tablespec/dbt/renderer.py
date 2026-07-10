@@ -58,8 +58,9 @@ class DbtRefRenderer:
                 # Explicitly external relation -> a dedicated 'external' source
                 # group (NOT the local 'raw' landing source).
                 return f"{{{{ source('external', '{resolved.node_id}') }}}}"
-            # raw_<t> landing table -> the local raw source.
-            return self._routing.source_literal(resolved.node_id)
+            # raw_<t> landing table -> the local raw source, or a ref() to the
+            # emitted file-reading landing model when it is model-backed.
+            return self._routing.raw_literal(resolved.node_id)
         # ingested_<t> / gold_<t> -> a dbt model ref.
         return self._routing.ref_literal(resolved.node_id)
 

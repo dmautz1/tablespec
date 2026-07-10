@@ -40,6 +40,11 @@ from tablespec.dbt.contracts import (
     render_contract_config_arg,
 )
 from tablespec.dbt.profiles import render_profiles_yml as _render_profiles_yml
+from tablespec.dbt.raw_models import (
+    file_backed_source,
+    render_raw_model_sql,
+    supports_raw_file_models,
+)
 from tablespec.dbt.schema_tests import render_tests_for_column
 from tablespec.dialects import resolve_emit_defaults
 from tablespec.models.umf import UMF
@@ -105,15 +110,18 @@ def _model_config(ingest: IngestSelect) -> str:
     return f"{{{{\n    config(\n        materialized='table',\n{contract}\n    )\n}}}}"
 
 
-def _model_sql(table: str, ingest: IngestSelect) -> str:
+def _model_sql(table: str, ingest: IngestSelect, *, raw_relation: str) -> str:
     """Render the dbt model SQL for *table*.
 
-    The body is the shared cast SELECT over the raw source. For incremental+pk it
-    runs the shared dedup-latest window so the newest row per key wins within the
-    batch; dbt then MERGEs that deduped set into the target.
+    The body is the shared cast SELECT over *raw_relation* -- the
+    ``{{ source('raw', 'raw_<t>') }}`` literal for a pre-existing landing table,
+    or ``{{ ref('raw_<t>') }}`` when the landing is an emitted file-reading
+    model. For incremental+pk it runs the shared dedup-latest window so the
+    newest row per key wins within the batch; dbt then MERGEs that deduped set
+    into the target.
     """
     config = _model_config(ingest)
-    source = f"{{{{ source('raw', 'raw_{table}') }}}}"
+    source = raw_relation
 
     if ingest.has_dedup:
         # incremental + pk: dbt MERGEs on the unique key; the model body dedups the
@@ -391,14 +399,36 @@ def generate_dbt_project(
     emitted_tables = [t for _, t, _ in emitted]
     resolver = _emitted_resolver(emitted_tables)
 
+    # Partition file-backed tables (delimited source with a path, dialect can
+    # read files) from source-backed ones: the former get a file-reading
+    # ``raw_<t>`` MODEL and a ``ref()`` edge; the rest keep the sources.yml
+    # declaration and the ``source()`` edge (see tablespec.dbt.raw_models).
+    file_sources = {
+        t: src
+        for u, t, _ in emitted
+        if supports_raw_file_models(dialect) and (src := file_backed_source(u))
+    }
+    source_backed = [t for t in emitted_tables if t not in file_sources]
+
     files: dict[str, str] = {
         "dbt_project.yml": _dbt_project_yml(project_name),
         "profiles.yml": _profiles_yml(project_name, target=profile_target),
-        "models/sources.yml": _sources_yml(emitted_tables),
         "models/schema.yml": _schema_yml(emitted, resolver, dialect=dialect),
     }
-    for _, t, ing in emitted:
-        files[f"models/{t}.sql"] = _model_sql(t, ing)
+    if source_backed:
+        files["models/sources.yml"] = _sources_yml(source_backed)
+    for u, t, ing in emitted:
+        if t in file_sources:
+            files[f"models/raw_{t}.sql"] = render_raw_model_sql(
+                t,
+                file_sources[t],
+                [c["name"] for c in u["columns"]],
+                dialect=dialect,
+            )
+            raw_relation = f"{{{{ ref('raw_{t}') }}}}"
+        else:
+            raw_relation = f"{{{{ source('raw', 'raw_{t}') }}}}"
+        files[f"models/{t}.sql"] = _model_sql(t, ing, raw_relation=raw_relation)
 
     if out_dir is not None:
         base = Path(out_dir)

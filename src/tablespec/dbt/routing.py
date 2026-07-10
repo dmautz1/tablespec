@@ -31,11 +31,15 @@ class RoutingPolicy:
         raw_schema: schema the raw source tables live in (CI/duckdb default
             ``main``; prod overrides via the generated ``sources.yml``/profile).
         raw_database: optional source database (prod catalog); ``None`` for duckdb.
+        model_backed_raw: raw identifiers (``raw_<t>``) emitted as file-reading
+            MODELS rather than declared sources (see ``tablespec.dbt.raw_models``);
+            :meth:`raw_literal` renders these as ``ref()`` edges.
     """
 
     source_name: str = "raw"
     raw_schema: str = "main"
     raw_database: str | None = None
+    model_backed_raw: frozenset[str] = frozenset()
 
     def source_literal(self, raw_identifier: str) -> str:
         """Render ``{{ source('<source_name>', '<raw_identifier>') }}``."""
@@ -45,6 +49,16 @@ class RoutingPolicy:
     def ref_literal(model_name: str) -> str:
         """Render ``{{ ref('<model_name>') }}`` (db/schema resolved by dbt target)."""
         return f"{{{{ ref('{model_name}') }}}}"
+
+    def raw_literal(self, raw_identifier: str) -> str:
+        """Render the edge to a raw landing relation.
+
+        ``ref()`` when the landing is an emitted file-reading model
+        (``model_backed_raw``), else the classic ``source()`` declaration.
+        """
+        if raw_identifier in self.model_backed_raw:
+            return self.ref_literal(raw_identifier)
+        return self.source_literal(raw_identifier)
 
 
 __all__ = ["RoutingPolicy"]

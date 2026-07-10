@@ -57,6 +57,7 @@ DBT_MODULES = [
     SRC / "dbt" / "contracts.py",
     SRC / "dbt" / "materialization.py",
     SRC / "dbt" / "project.py",
+    SRC / "dbt" / "raw_models.py",
     SRC / "dbt" / "registry.py",
     SRC / "dbt" / "renderer.py",
     SRC / "dbt" / "routing.py",
