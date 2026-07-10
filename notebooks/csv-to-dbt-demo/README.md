@@ -1,19 +1,15 @@
 # CSV → dbt demo notebook
 
-One notebook, the whole tablespec → dbt story on Databricks: install tablespec
-from the workspace repo, derive UMF specs from CSVs in a Unity Catalog volume
-(or load authored YAML/JSON/Excel specs), emit a dbt project, and run
-`dbt build` in-notebook — **dbt itself reads the CSVs and creates the tables**.
-No data is pre-loaded: each UMF declares `source: {kind: delimited, path: ...}`,
-so the emitted `raw_<t>` models `read_files(...)` the volume files directly,
-land them all-STRING (ADR-007, plus `_source_file`/`_load_ts`), and the typed
-cast models build on top via `{{ ref('raw_<t>') }}`.
-
-## Notebook
-
-| Notebook | What it does |
-|---|---|
-| `01-csv-to-dbt` | install → UMFs from CSVs or specs → `tablespec validate` → `DbtRunner.emit` → in-process `dbt build` → verify + scorecard |
+One notebook, a few lines per cell: install tablespec from the workspace repo,
+derive UMF specs from CSVs in a Unity Catalog volume (`umfs_from_csvs`) or load
+authored YAML/JSON/Excel specs (`umfs_from_spec_dir`), emit a dbt project, and
+run `dbt build` in-notebook — **dbt itself reads the CSVs and creates the
+tables**. No data is pre-loaded: each UMF declares
+`source: {kind: delimited, path: ...}`, so the emitted `raw_<t>` models
+`read_files(...)` the volume files directly, land them all-STRING (plus
+`_source_file`/`_load_ts`), and the typed cast models build on top via
+`{{ ref('raw_<t>') }}`. Specs and the dbt project are written to a workspace
+directory (`out_dir`) so they can be inspected and edited in the workspace UI.
 
 ## Cluster requirements
 
@@ -23,30 +19,27 @@ cast models build on top via `{{ ref('raw_<t>') }}`.
   classic driver SparkSession — serverless / Spark-Connect-only compute will
   not work.
 - Unity Catalog enabled; permission to `CREATE SCHEMA` (and `CREATE VOLUME`)
-  in the target catalog. The catalog itself must already exist — the notebook
-  never creates catalogs.
+  in the target catalog. The catalog itself must already exist.
 
 ## Operating it
 
 1. Add the tablespec repo to the workspace as a **Git folder** (until the
    feature branch merges, track `feat/databricks-notebook-dbt-defaults`).
 2. Upload one or more CSVs (comma-delimited, `"`-quoted, header row) to the
-   target volume — the notebook creates `<catalog>.<schema>.<volume>` if
-   missing; upload via **Catalog ▸ … ▸ Volumes ▸ Upload** after a first run,
-   or point `csv_dir` at any existing `/Volumes/...` directory.
-3. Run `01-csv-to-dbt`. Defaults: everything lands in
-   `main.tablespec_dbt_demo`; the derived specs are persisted to
-   `<volume>/tablespec_out/specs/`.
+   target volume via **Catalog ▸ … ▸ Volumes ▸ Upload**, or point `csv_dir`
+   at any existing `/Volumes/...` directory.
+3. Run `01-csv-to-dbt`, then check the results directly in Databricks:
+   tables in `<catalog>.<schema>`, specs and the dbt project under `out_dir`
+   (default `/Workspace/Users/<you>/tablespec_out/{specs,dbt}`).
 
 ### The iterate loop (CSV → edit specs → spec mode)
 
-CSV mode derives all-VARCHAR starter specs and persists them. Edit them —
-narrow types, add `primary_key`, descriptions, enums — then re-run the notebook
-with `spec_dir = /Volumes/<catalog>/<schema>/<volume>/tablespec_out/specs` to
-build the enriched pipeline. Spec mode also accepts flat `*.yaml`/`*.json` and
-`*.xlsx` schema workbooks (`ExcelToUMFConverter`); every spec must carry
-`source: {kind: delimited, path: ...}` (relative paths resolve against
-`csv_dir`).
+CSV mode persists validated, editable specs to `<out_dir>/specs`. Edit them —
+narrow types, add `primary_key`, descriptions, enums — then re-run with
+`spec_dir = <out_dir>/specs` to build the enriched pipeline. Spec mode accepts
+split `table.yaml` dirs, flat `*.yaml`/`*.json`, and `*.xlsx` schema workbooks;
+every spec must carry `source: {kind: delimited, path: ...}` (relative paths
+resolve against `csv_dir`).
 
 ## Widget reference
 
@@ -57,25 +50,18 @@ build the enriched pipeline. Spec mode also accepts flat `*.yaml`/`*.json` and
 | `schema` | `tablespec_dbt_demo` | Where dbt materializes every table (`DBT_SPARK_SCHEMA`); created if missing |
 | `volume` | `raw` | UC volume with the input CSVs; created if missing |
 | `csv_dir` | *(empty)* | CSV directory; empty = the volume root. Also the base for relative spec `source.path` |
-| `spec_dir` | *(empty)* | Non-empty switches to spec mode (CSV widgets still locate the volume/outputs) |
+| `spec_dir` | *(empty)* | Non-empty switches to spec mode |
+| `out_dir` | *(empty)* | Workspace directory for specs + the dbt project; empty = `/Workspace/Users/<you>/tablespec_out` |
 
 ## Notes
 
-- **Install cell**: `pip install -e <repo> dbt-core dbt-spark`. Plain
-  `dbt-spark` deliberately — the `[session]` extra only adds a
-  `pyspark>=3,<5` pin, and pip-installing pyspark on DBR shadows the runtime's
-  bundled Spark; the session method needs nothing beyond the runtime's own
-  pyspark. If the editable (`-e`) install misbehaves on the workspace FUSE
-  mount, drop the `-e`.
-- **dbt project dir** is `/tmp/tablespec_dbt` on the driver (dbt's `target/`
-  churn is slow on FUSE volumes and the project is disposable — it is
-  re-emitted every run and shown inline in the notebook).
+- **Install cell**: plain `dbt-spark`, not `dbt-spark[session]` — the extra
+  only adds a `pyspark>=3,<5` pin, and pip-installing pyspark on DBR shadows
+  the runtime's bundled Spark. If the editable (`-e`) install misbehaves on
+  the workspace FUSE mount, drop the `-e`.
 - **No `sources.yml`**: with every UMF file-backed, the raw landing tables are
   dbt models, so nothing needs to pre-exist and no source schema is configured.
 - **Idempotency**: `raw_<t>` models are `table` materializations — rebuilt from
   the file each run. Incremental+PK typed models re-MERGE the same batch
-  safely; keyless-append models duplicate rows on re-run (the existing emitter
-  contract). Large CSVs are re-read on every build — fine for a demo.
-- Proven pairing target: dedicated-access DBR 15.4+; verify the plain
-  `dbt-spark` install on your runtime first — it is the one deliberate
-  deviation from the docs' `dbt-spark[session]`.
+  safely; keyless-append models duplicate rows on re-run. Large CSVs are
+  re-read on every build.

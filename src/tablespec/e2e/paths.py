@@ -33,6 +33,7 @@ LOAD; the backbone still needs a session to EXECUTE the compiled artifacts.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -115,6 +116,176 @@ def umfs_from_specs(spec_paths: list[str | Path]) -> list[UMF]:
     from tablespec.models.umf import load_umf_from_yaml
 
     return [load_umf_from_yaml(p) for p in spec_paths]
+
+
+def _csv_table_name(stem: str) -> str:
+    """Sanitize a CSV filename stem into a table name (``t_``-prefixed if digit-led)."""
+    import re
+
+    table = re.sub(r"[^0-9a-zA-Z_]+", "_", stem).strip("_").lower()
+    if table and table[0].isdigit():
+        table = f"t_{table}"
+    if not table:
+        msg = f"CSV filename {stem!r} sanitizes to an empty table name"
+        raise ValueError(msg)
+    return table
+
+
+def umfs_from_csvs(
+    spark: Any,
+    csv_dir: str | Path | Sequence[str | Path],
+    *,
+    delimiter: str = ",",
+    header: bool = True,
+    quote_char: str | None = '"',
+    encoding: str = "UTF-8",
+) -> list[UMF]:
+    """Path C: derive FILE-BACKED UMFs from delimited files (one table per file).
+
+    Each file is read once through the ingestion reader seam (all-STRING,
+    ADR-007) purely to reflect its column list; the returned UMF carries a
+    ``source: {kind: delimited, path: <file>}`` declaration, so the dbt
+    emitters render a file-reading ``raw_<t>`` model and ``dbt build`` ingests
+    the file itself -- nothing is pre-loaded (see ``tablespec.dbt.raw_models``).
+
+    Args:
+        spark: an active Spark (classic or Connect) session.
+        csv_dir: a directory (every ``*.csv`` in it becomes a table, table name
+            = sanitized filename stem) or an explicit sequence of file paths.
+        delimiter / header / quote_char / encoding: reader options recorded in
+            each UMF's source declaration.
+
+    Returns:
+        The derived :class:`UMF` models, sorted by file name.
+    """
+    from tablespec.ingestion import get_reader
+    from tablespec.models.umf import UMF, DelimitedSource
+    from tablespec.profiling.spark_mapper import SparkToUmfMapper
+
+    if isinstance(csv_dir, (str, Path)):
+        base = Path(csv_dir)
+        paths = sorted(base.glob("*.csv"))
+        if not paths:
+            msg = f"No *.csv files in {base}"
+            raise FileNotFoundError(msg)
+    else:
+        paths = [Path(p) for p in csv_dir]
+
+    mapper = SparkToUmfMapper()
+    umfs: list[UMF] = []
+    seen: set[str] = set()
+    for path in paths:
+        table = _csv_table_name(path.stem)
+        if table in seen:
+            msg = f"Duplicate table name {table!r} (from {path.name})"
+            raise ValueError(msg)
+        seen.add(table)
+        source = DelimitedSource(
+            kind="delimited",
+            delimiter=delimiter,
+            header=header,
+            quote_char=quote_char,
+            encoding=encoding,
+            path=str(path),
+        )
+        df = get_reader(source).read(source, spark)
+        umf_data = _to_strict_umf_data(mapper.map_dataframe_to_umf(df, table))
+        umf_data["source"] = source.model_dump(exclude_none=True)
+        umfs.append(UMF(**umf_data))
+    return umfs
+
+
+def umfs_from_spec_dir(
+    spec_dir: str | Path, *, data_dir: str | Path | None = None
+) -> list[UMF]:
+    """Path B, directory form: load every spec under *spec_dir*.
+
+    Accepts split-format table dirs (``**/table.yaml``, preferred when present),
+    flat ``*.yaml``/``*.yml`` specs, ``*.json`` interchange files, and ``*.xlsx``
+    schema workbooks (``ExcelToUMFConverter``).
+
+    When *data_dir* is given, a relative delimited ``source.path`` in a spec is
+    resolved against it (the loaded models are copied, never mutated on disk).
+
+    Returns:
+        The loaded :class:`UMF` models.
+    """
+    from tablespec.models.umf import DelimitedSource, load_umf_from_yaml
+    from tablespec.umf_loader import UMFLoader
+
+    base = Path(spec_dir)
+    loader = UMFLoader()
+    split_dirs = sorted({p.parent for p in base.rglob("table.yaml")})
+    if split_dirs:
+        umfs = [loader.load(d) for d in split_dirs]
+    else:
+        umfs = [
+            load_umf_from_yaml(p)
+            for p in sorted([*base.glob("*.yaml"), *base.glob("*.yml")])
+        ]
+        umfs += [loader.load(p) for p in sorted(base.glob("*.json"))]
+        if xlsx := sorted(base.glob("*.xlsx")):
+            from tablespec.excel_converter import ExcelToUMFConverter
+
+            umfs += [ExcelToUMFConverter().convert(p)[0] for p in xlsx]
+    if not umfs:
+        msg = (
+            f"No specs in {base} (looked for split table.yaml dirs, "
+            "*.yaml/*.yml, *.json, *.xlsx)"
+        )
+        raise FileNotFoundError(msg)
+
+    if data_dir is None:
+        return umfs
+    resolved: list[UMF] = []
+    for umf in umfs:
+        src = umf.source
+        if (
+            isinstance(src, DelimitedSource)
+            and src.path
+            and not Path(src.path).is_absolute()
+        ):
+            umf = umf.model_copy(
+                update={
+                    "source": src.model_copy(
+                        update={"path": str(Path(data_dir) / src.path)}
+                    )
+                }
+            )
+        resolved.append(umf)
+    return resolved
+
+
+def save_specs(umfs: list[UMF], out_dir: str | Path, *, validate: bool = True) -> Path:
+    """Persist a UMF set as editable split-format specs under *out_dir*.
+
+    *out_dir* is cleared first (stale specs from removed tables would otherwise
+    survive re-runs); each table lands at ``<out_dir>/<table_name>/``. With
+    *validate* (default) every spec is checked against the UMF JSON schema and
+    an invalid one raises.
+
+    Returns:
+        *out_dir* as a :class:`Path`.
+    """
+    import shutil
+
+    from tablespec.umf_loader import UMFLoader
+    from tablespec.umf_validator import UMFValidator
+
+    out = Path(out_dir)
+    if out.exists():
+        shutil.rmtree(out)
+    loader = UMFLoader()
+    validator = UMFValidator() if validate else None
+    for umf in umfs:
+        if validator is not None:
+            validator.validate_data(
+                umf.model_dump(mode="json", exclude_none=True),
+                raise_on_error=True,
+                source_name=umf.table_name,
+            )
+        loader.save(umf, out / umf.table_name)
+    return out
 
 
 def _to_strict_umf_data(base: dict[str, Any]) -> dict[str, Any]:

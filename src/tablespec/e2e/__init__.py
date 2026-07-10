@@ -17,7 +17,13 @@ from __future__ import annotations
 from tablespec.e2e.backbone import BackboneResult, run_backbone
 from tablespec.e2e.compile import compile_umfs
 from tablespec.e2e.manifest import CompiledArtifacts, TableArtifacts
-from tablespec.e2e.paths import umfs_from_specs, umfs_from_tables
+from tablespec.e2e.paths import (
+    save_specs,
+    umfs_from_csvs,
+    umfs_from_spec_dir,
+    umfs_from_specs,
+    umfs_from_tables,
+)
 
 __all__ = [
     "BackboneResult",
@@ -25,6 +31,9 @@ __all__ = [
     "TableArtifacts",
     "compile_umfs",
     "run_backbone",
+    "save_specs",
+    "umfs_from_csvs",
+    "umfs_from_spec_dir",
     "umfs_from_specs",
     "umfs_from_tables",
 ]
