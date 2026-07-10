@@ -113,7 +113,10 @@ def test_dialect_support_matrix() -> None:
 def test_databricks_raw_model_sql() -> None:
     source = DelimitedSource.model_validate(_delimited_source(delimiter="|"))
     sql = render_raw_model_sql(
-        "orders", source, ["orders_id", "label"], dialect="databricks"
+        "orders",
+        source,
+        [("orders_id", "orders_id", None), ("label", "label", None)],
+        dialect="databricks",
     )
     assert "materialized='table'" in sql
     assert "read_files(" in sql
@@ -134,7 +137,10 @@ def test_databricks_raw_model_sql() -> None:
 def test_duckdb_raw_model_sql() -> None:
     source = DelimitedSource.model_validate(_delimited_source())
     sql = render_raw_model_sql(
-        "orders", source, ["orders_id", "label"], dialect="duckdb"
+        "orders",
+        source,
+        [("orders_id", "orders_id", None), ("label", "label", None)],
+        dialect="duckdb",
     )
     assert "read_csv(" in sql
     assert "header=true" in sql
@@ -149,7 +155,9 @@ def test_duckdb_raw_model_sql() -> None:
 def test_quote_argument_omitted_when_undeclared() -> None:
     source = DelimitedSource.model_validate(_delimited_source(quote_char=None))
     for dialect in ("databricks", "duckdb"):
-        sql = render_raw_model_sql("orders", source, ["orders_id"], dialect=dialect)
+        sql = render_raw_model_sql(
+            "orders", source, [("orders_id", "orders_id", None)], dialect=dialect
+        )
         assert "quote" not in sql
 
 
@@ -157,14 +165,56 @@ def test_sql_literal_single_quotes_are_doubled() -> None:
     source = DelimitedSource.model_validate(
         _delimited_source(path="/data/o'brien/orders.csv")
     )
-    sql = render_raw_model_sql("orders", source, ["orders_id"], dialect="duckdb")
+    sql = render_raw_model_sql(
+        "orders", source, [("orders_id", "orders_id", None)], dialect="duckdb"
+    )
     assert "'/data/o''brien/orders.csv'" in sql
+
+
+def test_sanitized_header_is_aliased() -> None:
+    source = DelimitedSource.model_validate(_delimited_source())
+    sql = render_raw_model_sql(
+        "orders",
+        source,
+        [("Order ID#", "Order_ID", None), ("label", "label", None)],
+        dialect="databricks",
+    )
+    assert "`Order ID#` AS `Order_ID`," in sql
+    assert "    `label`," in sql
+    dsql = render_raw_model_sql(
+        "orders", source, [("Order ID#", "Order_ID", None)], dialect="duckdb"
+    )
+    assert '"Order ID#" AS "Order_ID",' in dsql
+
+
+def test_metadata_columns_are_synthesized_not_read() -> None:
+    """Non-data columns (provenance meta_*) never appear as file headers: the
+    raw model synthesizes them instead of selecting them from the read."""
+    source = DelimitedSource.model_validate(_delimited_source())
+    cols = [
+        ("orders_id", "orders_id", "data"),
+        ("meta_source_name", "meta_source_name", "metadata"),
+        ("meta_load_dt", "meta_load_dt", "metadata"),
+        ("meta_checksum", "meta_checksum", "metadata"),
+    ]
+    sql = render_raw_model_sql("orders", source, cols, dialect="databricks")
+    assert "'/data/in/orders.csv' AS `meta_source_name`," in sql
+    assert "CAST(current_timestamp() AS STRING) AS `meta_load_dt`," in sql
+    assert "CAST(NULL AS STRING) AS `meta_checksum`," in sql
+    # The synthesized columns are never read from the file.
+    assert "    `meta_source_name`,\n" not in sql
+
+    dsql = render_raw_model_sql("orders", source, cols, dialect="duckdb")
+    assert 'CAST(current_timestamp AS VARCHAR) AS "meta_load_dt",' in dsql
+    assert 'CAST(NULL AS VARCHAR) AS "meta_checksum",' in dsql
 
 
 def test_unsupported_dialect_raises() -> None:
     source = DelimitedSource.model_validate(_delimited_source())
     with pytest.raises(ValueError, match="spark"):
-        render_raw_model_sql("orders", source, ["orders_id"], dialect="spark")
+        render_raw_model_sql(
+            "orders", source, [("orders_id", "orders_id", None)], dialect="spark"
+        )
 
 
 # ---------------------------------------------------------------------------

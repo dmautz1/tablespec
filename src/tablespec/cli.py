@@ -755,6 +755,68 @@ def import_excel(
 
 
 @app.command()
+def import_csv(
+    source: Path = typer.Argument(
+        ...,
+        help="CSV file or directory of CSVs (one table per file)",
+        exists=True,
+    ),
+    dest: Path = typer.Argument(
+        ...,
+        help="Destination specs directory (split format, one table per subdirectory)",
+    ),
+    delimiter: str | None = typer.Option(
+        None,
+        "--delimiter",
+        help="Field delimiter (default: detect pipe vs comma per file)",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Overwrite existing destination",
+    ),
+) -> None:
+    """Generate UMF spec file(s) from a CSV or a directory of CSVs.
+
+    Reads only each file's header row (the raw landing is all-STRING, so every
+    column starts as VARCHAR) and writes one validated split-format spec per
+    table under DEST. Each spec carries ``source: {kind: delimited, path: ...}``
+    so the dbt emitters render file-reading ``raw_<t>`` models -- ``dbt build``
+    then ingests the files itself. No Spark required.
+
+    Examples:
+      tablespec import-csv data/orders.csv tables/
+      tablespec import-csv /Volumes/main/demo/raw tables/ --force
+
+    """
+    from tablespec.e2e import save_specs, umfs_from_csvs
+    from tablespec.models.umf import DelimitedSource
+
+    try:
+        if dest.exists() and not force:
+            console.print(
+                f"[red]Error:[/red] {dest} already exists. Use --force to overwrite."
+            )
+            raise typer.Exit(1)
+
+        umfs = umfs_from_csvs(source, delimiter=delimiter)
+        save_specs(umfs, dest)
+        for umf in umfs:
+            src = umf.source
+            delim = src.delimiter if isinstance(src, DelimitedSource) else "?"
+            console.print(
+                f"  [green]{umf.table_name}[/green] "
+                f"({len(umf.columns)} columns, delimiter {delim!r}) "
+                f"-> {dest / umf.table_name}"
+            )
+        console.print(f"[green]Done.[/green] {len(umfs)} spec(s) written to {dest}")
+
+    except (FileNotFoundError, ValueError) as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
 def domains_list(
     format: str = typer.Option(
         "text",

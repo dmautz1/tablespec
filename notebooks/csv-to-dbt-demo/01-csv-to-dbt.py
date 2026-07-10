@@ -23,7 +23,7 @@ REPO = dbutils.widgets.get("repo_path").strip() or str((Path("/Workspace") / Pat
 
 # COMMAND ----------
 
-# MAGIC %pip install --quiet -e {REPO} dbt-core dbt-spark
+# MAGIC %pip install dbt-core dbt-spark tablespec -e /Workspace/Users/david.mautz@synaptiq.ai/tablespec-fork -q
 
 # COMMAND ----------
 
@@ -32,6 +32,8 @@ dbutils.library.restartPython()
 # COMMAND ----------
 
 import os
+import sys
+sys.path.insert(0, "/Workspace/Users/david.mautz@synaptiq.ai/tablespec-fork/src")
 
 CATALOG, SCHEMA, VOLUME, CSV_DIR, SPEC_DIR, OUT_DIR = (dbutils.widgets.get(w).strip().rstrip("/") for w in ("catalog", "schema", "volume", "csv_dir", "spec_dir", "out_dir"))
 CSV_DIR = CSV_DIR or f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
@@ -49,7 +51,7 @@ spark.sql(f"CREATE VOLUME IF NOT EXISTS `{CATALOG}`.`{SCHEMA}`.`{VOLUME}`")
 
 from tablespec.e2e import save_specs, umfs_from_csvs, umfs_from_spec_dir
 
-umfs = umfs_from_spec_dir(SPEC_DIR, data_dir=CSV_DIR) if SPEC_DIR else umfs_from_csvs(spark, CSV_DIR)
+umfs = umfs_from_spec_dir(SPEC_DIR, data_dir=CSV_DIR) if SPEC_DIR else umfs_from_csvs(CSV_DIR)
 if not SPEC_DIR:
     save_specs(umfs, f"{OUT_DIR}/specs")
 print("\n".join(f"{u.table_name}  <-  {u.effective_source().path}" for u in umfs))

@@ -33,6 +33,21 @@ directory (`out_dir`) so they can be inspected and edited in the workspace UI.
    tables in `<catalog>.<schema>`, specs and the dbt project under `out_dir`
    (default `/Workspace/Users/<you>/tablespec_out/{specs,dbt}`).
 
+### Generating specs from the command line
+
+The same capability is available off-notebook (no Spark needed — only each
+file's header row is read):
+
+```bash
+tablespec import-csv data/orders.csv tables/          # one file
+tablespec import-csv /Volumes/main/demo/raw tables/   # a directory of CSVs
+```
+
+Pipe vs comma is detected per file (`--delimiter` overrides); each table gets
+a validated split-format spec carrying `source: {kind: delimited, path: ...}`.
+Headers that are not valid identifiers are sanitized into the column `name`
+with the original label preserved as `canonical_name`.
+
 ### The iterate loop (CSV → edit specs → spec mode)
 
 CSV mode persists validated, editable specs to `<out_dir>/specs`. Edit them —

@@ -422,7 +422,10 @@ def generate_dbt_project(
             files[f"models/raw_{t}.sql"] = render_raw_model_sql(
                 t,
                 file_sources[t],
-                [c["name"] for c in u["columns"]],
+                [
+                    (c.get("canonical_name") or c["name"], c["name"], c.get("source"))
+                    for c in u["columns"]
+                ],
                 dialect=dialect,
             )
             raw_relation = f"{{{{ ref('raw_{t}') }}}}"

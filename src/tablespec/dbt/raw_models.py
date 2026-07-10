@@ -47,6 +47,10 @@ from tablespec.models.umf import UMF, DelimitedSource
 #: Dialects whose SQL can read a delimited file directly in a model body.
 RAW_FILE_MODEL_DIALECTS: tuple[str, ...] = ("databricks", "duckdb")
 
+#: Column ``source`` values that never appear as raw file headers -- they are
+#: synthesized at landing time (mirrors ``ingestion.raw_ingester``).
+NON_DATA_COLUMN_SOURCES: frozenset[str] = frozenset({"filename", "metadata", "derived"})
+
 
 def supports_raw_file_models(dialect: str) -> bool:
     """Whether *dialect* can render a file-reading raw landing model."""
@@ -146,17 +150,27 @@ def _read_relation(source: DelimitedSource, *, dialect: str) -> str:
 def render_raw_model_sql(
     table: str,
     source: DelimitedSource,
-    column_names: list[str],
+    columns: list[tuple[str, str, str | None]],
     *,
     dialect: str,
 ) -> str:
     """Render the ``raw_<table>`` file-reading landing model body.
 
-    The SELECT lists the UMF columns explicitly (all-STRING via the reader
-    options) and appends the raw-contract meta columns: ``_source_file`` (the
-    declared path literal) and ``_load_ts`` (the build timestamp; duckdb's
-    ``current_timestamp`` is TIMESTAMPTZ, so it is CAST to the raw contract's
-    plain TIMESTAMP there).
+    *columns* is ``(file_header, column_name, column_source)`` per column:
+    the file header is what the read function surfaces, the column name is the
+    UMF contract name (they differ when the header needed sanitizing, in which
+    case the header is preserved as the UMF ``canonical_name``), and the column
+    source is the UMF ``source`` field. Data columns are listed explicitly
+    (all-STRING via the reader options), aliased ``<header> AS <name>`` when
+    needed. Non-data columns (``source`` in ``filename``/``metadata``/
+    ``derived`` -- e.g. the canonical provenance ``meta_*`` set) never appear
+    as file headers, so the model SYNTHESIZES them exactly like the ingest
+    pipeline would: ``meta_source_name`` gets the declared path,
+    ``meta_load_dt`` the build timestamp, everything else a typed NULL -- all
+    as STRING, matching the all-STRING raw contract. The raw-contract meta
+    columns ``_source_file`` (path literal) and ``_load_ts`` (build timestamp;
+    duckdb's ``current_timestamp`` is TIMESTAMPTZ, so it is CAST to the raw
+    contract's plain TIMESTAMP there) are appended last.
     """
     if not supports_raw_file_models(dialect):
         msg = (
@@ -166,12 +180,35 @@ def render_raw_model_sql(
         raise ValueError(msg)
 
     assert source.path is not None  # guaranteed by file_backed_source
+    string_type = "STRING" if dialect == "databricks" else "VARCHAR"
+    now_expr = "current_timestamp()" if dialect == "databricks" else "current_timestamp"
     load_ts = (
-        "current_timestamp() AS _load_ts"
+        f"{now_expr} AS _load_ts"
         if dialect == "databricks"
-        else "CAST(current_timestamp AS TIMESTAMP) AS _load_ts"
+        else f"CAST({now_expr} AS TIMESTAMP) AS _load_ts"
     )
-    select_lines = [f"    {_ident(name, dialect=dialect)}," for name in column_names]
+
+    def _synthesized(name: str) -> str:
+        # Mirrors what the ingest pipeline records at landing time; the values
+        # SQL cannot know (checksums, offsets, pipeline identity) are NULL.
+        if name == "meta_source_name":
+            return _sql_str(source.path or "")
+        if name == "meta_load_dt":
+            return f"CAST({now_expr} AS {string_type})"
+        return f"CAST(NULL AS {string_type})"
+
+    select_lines: list[str] = []
+    for header, name, col_source in columns:
+        if col_source in NON_DATA_COLUMN_SOURCES:
+            select_lines.append(
+                f"    {_synthesized(name)} AS {_ident(name, dialect=dialect)},"
+            )
+        elif header == name:
+            select_lines.append(f"    {_ident(header, dialect=dialect)},")
+        else:
+            select_lines.append(
+                f"    {_ident(header, dialect=dialect)} AS {_ident(name, dialect=dialect)},"
+            )
     select_lines.append(f"    {_sql_str(source.path)} AS _source_file,")
     select_lines.append(f"    {load_ts}")
 

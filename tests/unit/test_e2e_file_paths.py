@@ -65,48 +65,16 @@ def test_csv_table_name_empty_raises() -> None:
 
 
 # ---------------------------------------------------------------------------
-# umfs_from_csvs (reader + mapper monkeypatched)
+# umfs_from_csvs (pure Python: header parse only)
 # ---------------------------------------------------------------------------
 
 
-class _FakeDf:
-    columns = ["id", "label"]
-
-
-class _FakeReader:
-    def read(self, source: DelimitedSource, spark: Any) -> _FakeDf:
-        assert spark == "spark-session"
-        assert source.path is not None
-        return _FakeDf()
-
-
-def _fake_map_dataframe_to_umf(self: Any, df: Any, table: str) -> dict[str, Any]:
-    return {
-        "table_name": table,
-        "columns": [
-            {"name": "id", "data_type": "VARCHAR", "nullable": True},
-            {"name": "label", "data_type": "VARCHAR", "nullable": True},
-        ],
-    }
-
-
-@pytest.fixture
-def _patched_seams(monkeypatch: pytest.MonkeyPatch) -> None:
-    import tablespec.ingestion as ingestion
-    from tablespec.profiling.spark_mapper import SparkToUmfMapper
-
-    monkeypatch.setattr(ingestion, "get_reader", lambda source: _FakeReader())
-    monkeypatch.setattr(
-        SparkToUmfMapper, "map_dataframe_to_umf", _fake_map_dataframe_to_umf
-    )
-
-
-def test_umfs_from_csvs_dir(tmp_path: Path, _patched_seams: None) -> None:
+def test_umfs_from_csvs_dir(tmp_path: Path) -> None:
     for name in ("Orders.csv", "line items.csv"):
         (tmp_path / name).write_text("id,label\n1,a\n")
     (tmp_path / "notes.txt").write_text("ignored")
 
-    umfs = umfs_from_csvs("spark-session", tmp_path)
+    umfs = umfs_from_csvs(tmp_path)
 
     # sorted() on paths is ASCII-ordered: "Orders.csv" < "line items.csv".
     assert [u.table_name for u in umfs] == ["orders", "line_items"]
@@ -116,43 +84,72 @@ def test_umfs_from_csvs_dir(tmp_path: Path, _patched_seams: None) -> None:
         assert src.path is not None and src.path.endswith(".csv")
         assert src.delimiter == ","
         assert umf.version == "1.0"
-        # nullable bools were wrapped into the strict Nullable shape.
+        data_cols = [c for c in umf.columns if c.source != "metadata"]
+        assert [c.name for c in data_cols] == ["id", "label"]
+        assert all(c.data_type == "VARCHAR" for c in data_cols)
         assert umf.columns[0].nullable.default is True
+        # Pipeline-completeness: the canonical provenance columns are appended
+        # (source: metadata), so the spec passes `tablespec validate`.
+        meta_names = {c.name for c in umf.columns if c.source == "metadata"}
+        assert "meta_source_name" in meta_names
+        assert "meta_load_dt" in meta_names
 
 
-def test_umfs_from_csvs_detects_pipe_and_comma_per_file(
-    tmp_path: Path, _patched_seams: None
-) -> None:
+def test_umfs_from_csvs_single_file(tmp_path: Path) -> None:
+    path = tmp_path / "orders.csv"
+    path.write_text("id,label\n1,a\n")
+    (umf,) = umfs_from_csvs(path)
+    assert umf.table_name == "orders"
+    assert isinstance(umf.source, DelimitedSource)
+    assert umf.source.path == str(path)
+
+
+def test_umfs_from_csvs_quoted_header_and_bom(tmp_path: Path) -> None:
+    (tmp_path / "q.csv").write_text('﻿"id","label, note"\n1,a\n')
+    (umf,) = umfs_from_csvs(tmp_path)
+    # Non-identifier headers sanitize into name; the label survives as
+    # canonical_name (which the raw model aliases back from).
+    assert [c.name for c in umf.columns[:2]] == ["id", "label_note"]
+    assert umf.columns[0].canonical_name is None
+    assert umf.columns[1].canonical_name == "label, note"
+
+
+def test_umfs_from_csvs_detects_pipe_and_comma_per_file(tmp_path: Path) -> None:
     (tmp_path / "piped.csv").write_text("id|label\n1|a\n")
     (tmp_path / "commas.csv").write_text("id,label\n1,a\n")
 
-    by_table = {u.table_name: u for u in umfs_from_csvs("spark-session", tmp_path)}
+    by_table = {u.table_name: u for u in umfs_from_csvs(tmp_path)}
 
     assert by_table["piped"].source.delimiter == "|"
+    assert by_table["piped"].columns[1].name == "label"
     assert by_table["commas"].source.delimiter == ","
 
 
-def test_umfs_from_csvs_explicit_delimiter_wins(
-    tmp_path: Path, _patched_seams: None
-) -> None:
+def test_umfs_from_csvs_explicit_delimiter_wins(tmp_path: Path) -> None:
     # A pipe-delimited header with an embedded comma; explicit delimiter is used as-is.
     (tmp_path / "piped.csv").write_text("id|label, extra\n1|a, b\n")
-    (umf,) = umfs_from_csvs("spark-session", tmp_path, delimiter="|")
+    (umf,) = umfs_from_csvs(tmp_path, delimiter="|")
     assert umf.source.delimiter == "|"
+    assert [c.name for c in umf.columns[:2]] == ["id", "label_extra"]
+    assert umf.columns[1].canonical_name == "label, extra"
 
 
 def test_umfs_from_csvs_empty_dir_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match=r"No \*\.csv"):
-        umfs_from_csvs("spark-session", tmp_path)
+        umfs_from_csvs(tmp_path)
 
 
-def test_umfs_from_csvs_duplicate_names_raise(
-    tmp_path: Path, _patched_seams: None
-) -> None:
+def test_umfs_from_csvs_empty_header_raises(tmp_path: Path) -> None:
+    (tmp_path / "bad.csv").write_text("id,,label\n1,x,a\n")
+    with pytest.raises(ValueError, match="empty"):
+        umfs_from_csvs(tmp_path)
+
+
+def test_umfs_from_csvs_duplicate_names_raise(tmp_path: Path) -> None:
     (tmp_path / "orders.csv").write_text("id\n1\n")
     (tmp_path / "Orders .csv").write_text("id\n1\n")
     with pytest.raises(ValueError, match="Duplicate table name"):
-        umfs_from_csvs("spark-session", tmp_path)
+        umfs_from_csvs(tmp_path)
 
 
 # ---------------------------------------------------------------------------

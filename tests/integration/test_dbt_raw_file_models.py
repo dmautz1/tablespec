@@ -67,6 +67,15 @@ columns:
     length: 32
     nullable:
       default: false
+  - name: meta_source_name
+    data_type: VARCHAR
+    source: metadata
+  - name: meta_load_dt
+    data_type: DATETIME
+    source: metadata
+  - name: meta_checksum
+    data_type: VARCHAR
+    source: metadata
 """
 
 _CSV = (
@@ -130,6 +139,21 @@ def test_dbt_build_ingests_declared_csv(tmp_path: Path) -> None:
             "SELECT DISTINCT _source_file FROM raw_metrics"
         ).fetchall()
         assert src_files == [(str(csv_path),)]
+
+        # Provenance (source: metadata) columns are never read from the file --
+        # the raw model synthesizes them and the typed model casts them.
+        meta = con.execute(
+            "SELECT DISTINCT meta_source_name, meta_load_dt IS NOT NULL, "
+            "meta_checksum FROM metrics"
+        ).fetchall()
+        assert meta == [(str(csv_path), True, None)]
+        typed = dict(
+            con.execute(
+                "SELECT column_name, data_type FROM information_schema.columns "
+                "WHERE table_name='metrics'"
+            ).fetchall()
+        )
+        assert typed["meta_load_dt"] == "TIMESTAMP", typed
 
         # The typed model built on top of the file-read landing.
         rows = dict(

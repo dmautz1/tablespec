@@ -479,8 +479,7 @@ def generate_dbt_dag_project(
     }
     routing = dataclasses.replace(
         routing,
-        model_backed_raw=routing.model_backed_raw
-        | {f"raw_{t}" for t in file_sources},
+        model_backed_raw=routing.model_backed_raw | {f"raw_{t}" for t in file_sources},
     )
 
     files: dict[str, str] = {
@@ -508,7 +507,10 @@ def generate_dbt_dag_project(
             files[f"models/staging/raw_{umf.table_name}.sql"] = render_raw_model_sql(
                 umf.table_name,
                 file_sources[umf.table_name],
-                [c["name"] for c in umf_data["columns"]],
+                [
+                    (c.get("canonical_name") or c["name"], c["name"], c.get("source"))
+                    for c in umf_data["columns"]
+                ],
                 dialect=dialect,
             )
         files[f"models/staging/ingested_{umf.table_name}.sql"] = _staging_model_sql(
