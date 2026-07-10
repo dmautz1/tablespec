@@ -131,11 +131,18 @@ def _csv_table_name(stem: str) -> str:
     return table
 
 
+def _sniff_delimiter(path: Path, encoding: str) -> str:
+    """Pick pipe or comma for *path* by counting them in the header line."""
+    with path.open(encoding=encoding, errors="replace") as f:
+        first = f.readline()
+    return "|" if first.count("|") > first.count(",") else ","
+
+
 def umfs_from_csvs(
     spark: Any,
     csv_dir: str | Path | Sequence[str | Path],
     *,
-    delimiter: str = ",",
+    delimiter: str | None = None,
     header: bool = True,
     quote_char: str | None = '"',
     encoding: str = "UTF-8",
@@ -152,8 +159,10 @@ def umfs_from_csvs(
         spark: an active Spark (classic or Connect) session.
         csv_dir: a directory (every ``*.csv`` in it becomes a table, table name
             = sanitized filename stem) or an explicit sequence of file paths.
-        delimiter / header / quote_char / encoding: reader options recorded in
-            each UMF's source declaration.
+        delimiter: the field delimiter. ``None`` (default) detects pipe vs
+            comma PER FILE from the header line, so a directory may mix both.
+        header / quote_char / encoding: reader options recorded in each UMF's
+            source declaration.
 
     Returns:
         The derived :class:`UMF` models, sorted by file name.
@@ -182,7 +191,7 @@ def umfs_from_csvs(
         seen.add(table)
         source = DelimitedSource(
             kind="delimited",
-            delimiter=delimiter,
+            delimiter=delimiter or _sniff_delimiter(path, encoding),
             header=header,
             quote_char=quote_char,
             encoding=encoding,

@@ -25,9 +25,10 @@ directory (`out_dir`) so they can be inspected and edited in the workspace UI.
 
 1. Add the tablespec repo to the workspace as a **Git folder** (until the
    feature branch merges, track `feat/databricks-notebook-dbt-defaults`).
-2. Upload one or more CSVs (comma-delimited, `"`-quoted, header row) to the
-   target volume via **Catalog ▸ … ▸ Volumes ▸ Upload**, or point `csv_dir`
-   at any existing `/Volumes/...` directory.
+2. Upload one or more CSVs (comma- or pipe-delimited — detected per file from
+   the header row; `"`-quoted, header row required) to the target volume via
+   **Catalog ▸ … ▸ Volumes ▸ Upload**, or point `csv_dir` at any existing
+   `/Volumes/...` directory.
 3. Run `01-csv-to-dbt`, then check the results directly in Databricks:
    tables in `<catalog>.<schema>`, specs and the dbt project under `out_dir`
    (default `/Workspace/Users/<you>/tablespec_out/{specs,dbt}`).

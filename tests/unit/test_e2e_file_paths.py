@@ -120,6 +120,27 @@ def test_umfs_from_csvs_dir(tmp_path: Path, _patched_seams: None) -> None:
         assert umf.columns[0].nullable.default is True
 
 
+def test_umfs_from_csvs_detects_pipe_and_comma_per_file(
+    tmp_path: Path, _patched_seams: None
+) -> None:
+    (tmp_path / "piped.csv").write_text("id|label\n1|a\n")
+    (tmp_path / "commas.csv").write_text("id,label\n1,a\n")
+
+    by_table = {u.table_name: u for u in umfs_from_csvs("spark-session", tmp_path)}
+
+    assert by_table["piped"].source.delimiter == "|"
+    assert by_table["commas"].source.delimiter == ","
+
+
+def test_umfs_from_csvs_explicit_delimiter_wins(
+    tmp_path: Path, _patched_seams: None
+) -> None:
+    # A pipe-delimited header with an embedded comma; explicit delimiter is used as-is.
+    (tmp_path / "piped.csv").write_text("id|label, extra\n1|a, b\n")
+    (umf,) = umfs_from_csvs("spark-session", tmp_path, delimiter="|")
+    assert umf.source.delimiter == "|"
+
+
 def test_umfs_from_csvs_empty_dir_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match=r"No \*\.csv"):
         umfs_from_csvs("spark-session", tmp_path)
