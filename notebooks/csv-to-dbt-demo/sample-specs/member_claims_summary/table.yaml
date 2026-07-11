@@ -1,0 +1,20 @@
+description: Generated (gold) member-level report combining monthly 
+  member, medical-claim, and pharmacy-claim files. Demonstrates 
+  primary_key derivation, embedded-SQL expressions (CONCAT_WS, COUNT, 
+  SUM, MAX_BY + order_by), highest_priority survivorship with a default,
+  and max_across_sources (GREATEST).
+metadata:
+  base_table_strategy: union_sources
+  output_config:
+    file_naming_example: member_claims_summary_YYYYMMDD.csv
+    include_footer: true
+    line_terminator: CRLF
+  source_tables:
+    - members
+    - claims
+    - rx
+primary_key:
+  - member_id
+table_name: member_claims_summary
+table_type: generated
+version: '1.0'

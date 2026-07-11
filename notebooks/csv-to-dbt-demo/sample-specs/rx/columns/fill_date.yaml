@@ -1,0 +1,8 @@
+column:
+  data_type: DATE
+  exclude_from_change_detection: false
+  format: YYYY-MM-DD
+  name: fill_date
+  nullable:
+    default: true
+  preserve_literal_null: false

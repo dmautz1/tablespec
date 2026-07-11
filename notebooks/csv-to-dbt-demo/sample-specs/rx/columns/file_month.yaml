@@ -1,0 +1,10 @@
+column:
+  data_type: VARCHAR
+  description: YYYYMM captured from the rx file name.
+  exclude_from_change_detection: false
+  length: 6
+  name: file_month
+  nullable:
+    default: true
+  preserve_literal_null: false
+  source: filename

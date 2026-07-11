@@ -1,0 +1,24 @@
+description: Monthly pharmacy claim files (rx_YYYYMM.csv).
+primary_key:
+  - rx_id
+relationships:
+  foreign_keys:
+    - column: member_id
+      cross_pipeline: false
+      references_column: member_id
+      references_table: members
+      type: foreign_key
+source:
+  delimiter: ','
+  encoding: UTF-8
+  filename_pattern:
+    captures:
+      1: file_month
+    regex: rx_(\d{6})\.csv
+  header: true
+  kind: delimited
+  path: rx_*.csv
+  quote_char: '"'
+  skip_rows: 0
+table_name: rx
+version: '1.0'

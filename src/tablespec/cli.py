@@ -817,6 +817,78 @@ def import_csv(
 
 
 @app.command()
+def enrich(
+    spec_dir: Path = typer.Argument(
+        ...,
+        help="Directory of split-format specs (one <table>/table.yaml each)",
+        exists=True,
+    ),
+    model: str | None = typer.Option(
+        None,
+        "--model",
+        help="Model / serving-endpoint name (default: TABLESPEC_LLM_MODEL, or "
+        "the Databricks default endpoint on a Databricks runtime)",
+    ),
+    base_url: str | None = typer.Option(
+        None,
+        "--base-url",
+        help="OpenAI-compatible endpoint base URL (default: TABLESPEC_LLM_BASE_URL, "
+        "or the workspace serving endpoint on Databricks). API key comes from "
+        "TABLESPEC_LLM_API_KEY or ambient Databricks auth -- never a CLI flag.",
+    ),
+    include: str = typer.Option(
+        "descriptions,validations,relationships",
+        "--include",
+        help="Comma-separated passes: descriptions (incl. notes + sample "
+        "values), validations, relationships",
+    ),
+    overwrite: bool = typer.Option(
+        False,
+        "--overwrite",
+        help="Let LLM descriptions replace existing ones (default: fill-only)",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Show what would change without writing the specs",
+    ),
+) -> None:
+    """Enrich specs with an LLM: descriptions, expectations, relationships.
+
+    Runs the repo's prompt builders against an OpenAI-compatible endpoint and
+    applies the responses conservatively: existing content is never overwritten
+    (unless --overwrite), expectations are deduplicated, and FK proposals are
+    dropped unless both tables exist in the set. Requires the [llm] extra
+    (pip install 'tablespec[llm]').
+
+    Examples:
+      tablespec enrich tables/                       # on Databricks: zero config
+      tablespec enrich tables/ --include descriptions --dry-run
+
+    """
+    from tablespec.llm import LlmConfigError, enrich_specs
+
+    passes = tuple(p.strip() for p in include.split(",") if p.strip())
+    try:
+        summary = enrich_specs(
+            spec_dir,
+            model=model,
+            base_url=base_url,
+            include=passes,
+            overwrite=overwrite,
+            save=not dry_run,
+        )
+        console.print(str(summary))
+        if dry_run:
+            console.print("[yellow]Dry run[/yellow] -- specs not written.")
+        else:
+            console.print(f"[green]Done.[/green] Enriched specs written to {spec_dir}")
+    except (LlmConfigError, FileNotFoundError, ValueError) as e:
+        console.print(f"[red]Error:[/red] {e}")
+        raise typer.Exit(1)
+
+
+@app.command()
 def domains_list(
     format: str = typer.Option(
         "text",

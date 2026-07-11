@@ -29,6 +29,7 @@ Top-level layout:
 - `inference/` - Domain-type inference and registry helpers.
 - `ingestion/` - Raw/JDBC ingestion helpers and ingestion constants.
 - `ldp/` - Local data-product project rendering and expectations.
+- `llm/` - OpenAI-compatible LLM client (Databricks-native defaults) and the spec-enrichment orchestrator behind `tablespec enrich`.
 - `models/` - Pydantic UMF, quality, changelog, and pipeline models.
 - `profiling/` - Native profiler types plus Spark/JDBC profile-to-UMF mappers, and `sql_reflect` (Spark-free UMF reflection from INFORMATION_SCHEMA rows).
 - `prompts/` - LLM prompt templates for docs, validation, filenames, relationships, and survivorship.
@@ -63,6 +64,8 @@ Flat modules at the package root hold the remaining cross-cutting helpers and CL
   - Install: `uv sync --extra duckdb`
 - **`[tui]`** - Textual support for the optional terminal UI.
   - Install: `uv sync --extra tui`
+- **`[llm]`** - OpenAI-compatible client for `tablespec enrich` (LLM spec enrichment).
+  - Install: `uv sync --extra llm`
 
 ## Development Workflow
 

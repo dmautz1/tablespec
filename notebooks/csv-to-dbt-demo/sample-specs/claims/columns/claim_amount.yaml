@@ -1,0 +1,9 @@
+column:
+  data_type: DECIMAL
+  exclude_from_change_detection: false
+  name: claim_amount
+  nullable:
+    default: true
+  precision: 18
+  preserve_literal_null: false
+  scale: 2

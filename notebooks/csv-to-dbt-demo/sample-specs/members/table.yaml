@@ -1,0 +1,13 @@
+description: Member demographic file (one row per member).
+primary_key:
+  - member_id
+source:
+  delimiter: ','
+  encoding: UTF-8
+  header: true
+  kind: delimited
+  path: members.csv
+  quote_char: '"'
+  skip_rows: 0
+table_name: members
+version: '1.0'

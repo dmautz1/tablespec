@@ -1,0 +1,22 @@
+column:
+  data_type: DATE
+  description: Most recent activity across medical and pharmacy feeds.
+  exclude_from_change_detection: false
+  name: last_activity_date
+  nullable:
+    default: true
+  preserve_literal_null: false
+derivation:
+  candidates:
+    - column: service_date
+      expression: MAX(service_date)
+      priority: 1
+      table: claims
+    - column: fill_date
+      expression: MAX(fill_date)
+      priority: 2
+      table: rx
+  survivorship:
+    explanation: GREATEST of the latest medical service date and latest 
+      pharmacy fill date; NULL when the member appears in neither feed.
+    strategy: max_across_sources

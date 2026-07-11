@@ -124,12 +124,13 @@ def test_databricks_raw_model_sql() -> None:
     assert "format => 'csv'" in sql
     assert "header => true" in sql
     assert "inferSchema => false" in sql
+    assert "mergeSchema => true" in sql
     assert "sep => '|'" in sql
     assert "quote => '\"'" in sql
     # Explicit backticked column list + synthesized raw-contract meta columns.
     assert "    `orders_id`," in sql
     assert "    `label`," in sql
-    assert "'/data/in/orders.csv' AS _source_file" in sql
+    assert "_metadata.file_name AS _source_file" in sql
     assert "current_timestamp() AS _load_ts" in sql
     assert "SELECT *" not in sql
 
@@ -145,6 +146,9 @@ def test_duckdb_raw_model_sql() -> None:
     assert "read_csv(" in sql
     assert "header=true" in sql
     assert "all_varchar=true" in sql
+    assert "filename=true" in sql
+    assert "union_by_name=true" in sql
+    assert 'parse_filename("filename") AS _source_file' in sql
     assert "delim=','" in sql
     assert "quote='\"'" in sql
     assert '    "orders_id",' in sql
@@ -198,7 +202,7 @@ def test_metadata_columns_are_synthesized_not_read() -> None:
         ("meta_checksum", "meta_checksum", "metadata"),
     ]
     sql = render_raw_model_sql("orders", source, cols, dialect="databricks")
-    assert "'/data/in/orders.csv' AS `meta_source_name`," in sql
+    assert "_metadata.file_name AS `meta_source_name`," in sql
     assert "CAST(current_timestamp() AS STRING) AS `meta_load_dt`," in sql
     assert "CAST(NULL AS STRING) AS `meta_checksum`," in sql
     # The synthesized columns are never read from the file.
@@ -207,6 +211,56 @@ def test_metadata_columns_are_synthesized_not_read() -> None:
     dsql = render_raw_model_sql("orders", source, cols, dialect="duckdb")
     assert 'CAST(current_timestamp AS VARCHAR) AS "meta_load_dt",' in dsql
     assert 'CAST(NULL AS VARCHAR) AS "meta_checksum",' in dsql
+
+
+def test_glob_path_with_filename_regex_filter_and_captures() -> None:
+    """A glob/dir path + filename_pattern: regex row filter + extracted captures."""
+    source = DelimitedSource.model_validate(
+        _delimited_source(
+            path="/data/incoming/",
+            filename_pattern={
+                "regex": r"orders_(\d{8})\.csv",
+                "captures": {1: "file_date"},
+            },
+        )
+    )
+    cols = [
+        ("orders_id", "orders_id", "data"),
+        ("file_date", "file_date", "filename"),
+    ]
+
+    sql = render_raw_model_sql("orders", source, cols, dialect="databricks")
+    # Spark string literals treat backslash as an escape, so the emitted SQL
+    # carries DOUBLED backslashes to preserve the regex.
+    assert (
+        r"regexp_extract(_metadata.file_name, 'orders_(\\d{8})\\.csv', 1) AS `file_date`,"
+        in sql
+    )
+    assert r"WHERE _metadata.file_name RLIKE 'orders_(\\d{8})\\.csv'" in sql
+
+    # duckdb string literals are standard SQL: backslashes pass through as-is.
+    dsql = render_raw_model_sql("orders", source, cols, dialect="duckdb")
+    assert (
+        r'regexp_extract(parse_filename("filename"), '
+        r"'orders_(\d{8})\.csv', 1) "
+        r'AS "file_date",' in dsql
+    )
+    assert (
+        r'WHERE regexp_matches(parse_filename("filename"), '
+        r"'orders_(\d{8})\.csv')" in dsql
+    )
+
+
+def test_filename_column_without_pattern_stays_null() -> None:
+    source = DelimitedSource.model_validate(_delimited_source())
+    sql = render_raw_model_sql(
+        "orders",
+        source,
+        [("file_date", "file_date", "filename")],
+        dialect="duckdb",
+    )
+    assert 'CAST(NULL AS VARCHAR) AS "file_date",' in sql
+    assert "WHERE" not in sql
 
 
 def test_unsupported_dialect_raises() -> None:

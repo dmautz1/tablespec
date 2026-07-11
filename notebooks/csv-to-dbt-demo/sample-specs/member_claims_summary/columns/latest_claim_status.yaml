@@ -1,0 +1,19 @@
+column:
+  data_type: VARCHAR
+  description: Status of the member's most recent claim.
+  exclude_from_change_detection: false
+  length: 10
+  name: latest_claim_status
+  nullable:
+    default: true
+  preserve_literal_null: false
+derivation:
+  candidates:
+    - column: claim_status
+      expression: MAX_BY(claim_status, service_date)
+      priority: 1
+      table: claims
+  survivorship:
+    explanation: Status of the most recent medical claim (window over 
+      service_date).
+    strategy: single_source

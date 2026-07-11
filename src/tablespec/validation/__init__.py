@@ -1,20 +1,29 @@
 """Great Expectations validation utilities."""
 
+from .dbt_results import DbtResultsError, dbt_validation_report, parse_dbt_run_results
 from .gx_processor import GXExpectationProcessor
+from .html_report import render_validation_report_html, write_validation_report
+from .report import ValidationReport
 
 # Define __all__ at module level for type checkers
 __all__ = [
     "VALIDATION_ERROR_SCHEMA",
     "VALIDATION_RESULT_SCHEMA",
+    "DbtResultsError",
     "ExpectColumnValuesToCastToType",
     "ExpectColumnValuesToMatchDomainType",
     "GXExpectationProcessor",
     "GXTableValidator",
     "TableValidator",
-    "build_validation_report_from_staged_execution",
     "ValidationBlockingError",
     "ValidationDeltaWriter",
+    "ValidationReport",
     "ValidationResult",
+    "build_validation_report_from_staged_execution",
+    "dbt_validation_report",
+    "parse_dbt_run_results",
+    "render_validation_report_html",
+    "write_validation_report",
 ]
 
 # TableValidator and GXTableValidator require pyspark - only available with tablespec[spark]
@@ -37,7 +46,11 @@ except (ImportError, ValueError):
     pass
 
 try:
-    from .gx_table_validator import GXTableValidator, ValidationBlockingError, ValidationResult
+    from .gx_table_validator import (
+        GXTableValidator,
+        ValidationBlockingError,
+        ValidationResult,
+    )
 except (ImportError, ValueError):
     pass
 

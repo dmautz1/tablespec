@@ -135,10 +135,11 @@ def test_dbt_build_ingests_declared_csv(tmp_path: Path) -> None:
         assert raw_catalog["_source_file"] == "VARCHAR", raw_catalog
         assert raw_catalog["_load_ts"] == "TIMESTAMP", raw_catalog
 
+        # Per-row provenance: the bare name of the row's source file.
         src_files = con.execute(
             "SELECT DISTINCT _source_file FROM raw_metrics"
         ).fetchall()
-        assert src_files == [(str(csv_path),)]
+        assert src_files == [("metrics.csv",)]
 
         # Provenance (source: metadata) columns are never read from the file --
         # the raw model synthesizes them and the typed model casts them.
@@ -146,7 +147,7 @@ def test_dbt_build_ingests_declared_csv(tmp_path: Path) -> None:
             "SELECT DISTINCT meta_source_name, meta_load_dt IS NOT NULL, "
             "meta_checksum FROM metrics"
         ).fetchall()
-        assert meta == [(str(csv_path), True, None)]
+        assert meta == [("metrics.csv", True, None)]
         typed = dict(
             con.execute(
                 "SELECT column_name, data_type FROM information_schema.columns "
@@ -164,5 +165,91 @@ def test_dbt_build_ingests_declared_csv(tmp_path: Path) -> None:
         assert len(rows) == 2, rows
         assert str(rows[1]) == "2024-01-01", rows
         assert rows[2] is None, f"unparseable date must be NULL-on-failure: {rows}"
+    finally:
+        con.close()
+
+    # The build's validations (contracts + tests) surface as a report parsed
+    # from REAL dbt run_results.json -- schema-drift protection for the parser.
+    report = result.validation_report()
+    assert report.success, report.as_dict()
+    types = {r.expectation_type for r in report.results}
+    assert "dbt_model" in types
+    assert any(t.startswith("dbt_test:") for t in types), types
+    unique = next(r for r in report.results if r.expectation_type == "dbt_test:unique")
+    assert unique.column_name == "metric_id"
+
+    from tablespec.validation import write_validation_report
+
+    json_path, html_path = write_validation_report(report, tmp_path / "reports")
+    assert json_path.exists()
+    assert "expectations passed" in html_path.read_text()
+
+
+def test_dbt_build_ingests_glob_with_filename_pattern(tmp_path: Path) -> None:
+    """A glob path + filename_pattern: the raw model reads only matching files
+    and regexp-extracts the filename capture into its column."""
+    (tmp_path / "orders_20240101.csv").write_text("order_id,label\n1,alpha\n")
+    (tmp_path / "orders_20240102.csv").write_text("order_id,label\n2,beta\n")
+    (tmp_path / "ignore_me.csv").write_text("order_id,label\n99,nope\n")
+
+    umf = UMF.model_validate(
+        {
+            "version": "1.0",
+            "table_name": "orders",
+            "ingestion": {"mode": "snapshot"},
+            "source": {
+                "kind": "delimited",
+                "delimiter": ",",
+                "header": True,
+                "quote_char": '"',
+                "path": str(tmp_path / "*.csv"),
+                "filename_pattern": {
+                    "regex": r"orders_(\d{8})\.csv",
+                    "captures": {1: "file_date"},
+                },
+            },
+            "columns": [
+                {
+                    "name": "order_id",
+                    "data_type": "INTEGER",
+                    "nullable": {"default": False},
+                },
+                {
+                    "name": "label",
+                    "data_type": "VARCHAR",
+                    "length": 32,
+                    "nullable": {"default": True},
+                },
+                {
+                    "name": "file_date",
+                    "data_type": "VARCHAR",
+                    "length": 8,
+                    "source": "filename",
+                    "nullable": {"default": True},
+                },
+            ],
+        }
+    )
+
+    project_dir = tmp_path / "project"
+    runner = DbtRunner()
+    project = runner.emit(umf, project_dir, dialect="duckdb", target="duckdb")
+    result = runner.build(project)
+    assert result.success, f"{result.stdout}\n{result.stderr}"
+
+    con = duckdb.connect(str(project_dir / "tablespec.duckdb"))
+    try:
+        rows = con.execute(
+            "SELECT order_id, file_date, _source_file FROM raw_orders ORDER BY order_id"
+        ).fetchall()
+        # The regex filter excluded ignore_me.csv; captures landed per row.
+        assert rows == [
+            ("1", "20240101", "orders_20240101.csv"),
+            ("2", "20240102", "orders_20240102.csv"),
+        ]
+        typed = con.execute(
+            "SELECT order_id, file_date FROM orders ORDER BY order_id"
+        ).fetchall()
+        assert typed == [(1, "20240101"), (2, "20240102")]
     finally:
         con.close()

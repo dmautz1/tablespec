@@ -1,0 +1,7 @@
+column:
+  data_type: INTEGER
+  description: Row offset within the source (ingest-assigned)
+  exclude_from_change_detection: false
+  name: meta_source_offset
+  preserve_literal_null: false
+  source: metadata

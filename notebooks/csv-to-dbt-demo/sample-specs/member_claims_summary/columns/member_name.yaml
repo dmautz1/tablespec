@@ -1,0 +1,18 @@
+column:
+  data_type: VARCHAR
+  description: Full name assembled with embedded SQL (CONCAT_WS).
+  exclude_from_change_detection: false
+  length: 101
+  name: member_name
+  nullable:
+    default: true
+  preserve_literal_null: false
+derivation:
+  candidates:
+    - expression: CONCAT_WS(' ', first_name, last_name)
+      priority: 1
+      table: members
+  survivorship:
+    explanation: Full name assembled with embedded SQL from the 
+      demographic file.
+    strategy: single_source

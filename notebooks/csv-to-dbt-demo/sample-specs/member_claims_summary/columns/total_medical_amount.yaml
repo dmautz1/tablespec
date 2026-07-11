@@ -1,0 +1,19 @@
+column:
+  data_type: DECIMAL
+  description: Total medical claim dollars.
+  exclude_from_change_detection: false
+  name: total_medical_amount
+  nullable:
+    default: true
+  precision: 18
+  preserve_literal_null: false
+  scale: 2
+derivation:
+  candidates:
+    - column: claim_amount
+      expression: SUM(claim_amount)
+      priority: 1
+      table: claims
+  survivorship:
+    explanation: Sum of medical claim amounts per member.
+    strategy: single_source

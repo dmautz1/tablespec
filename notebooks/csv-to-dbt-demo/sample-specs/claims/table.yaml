@@ -1,0 +1,24 @@
+description: Monthly medical claim files (claims_YYYYMM.csv).
+primary_key:
+  - claim_id
+relationships:
+  foreign_keys:
+    - column: member_id
+      cross_pipeline: false
+      references_column: member_id
+      references_table: members
+      type: foreign_key
+source:
+  delimiter: ','
+  encoding: UTF-8
+  filename_pattern:
+    captures:
+      1: file_month
+    regex: claims_(\d{6})\.csv
+  header: true
+  kind: delimited
+  path: claims_*.csv
+  quote_char: '"'
+  skip_rows: 0
+table_name: claims
+version: '1.0'

@@ -1,0 +1,15 @@
+column:
+  data_type: VARCHAR
+  description: Universe key -- every member seen in any source file.
+  exclude_from_change_detection: false
+  length: 10
+  name: member_id
+  nullable:
+    default: false
+  preserve_literal_null: false
+derivation:
+  strategy: primary_key
+  survivorship:
+    explanation: Primary key passthrough from the member universe; no 
+      cross-source logic.
+    strategy: single_source

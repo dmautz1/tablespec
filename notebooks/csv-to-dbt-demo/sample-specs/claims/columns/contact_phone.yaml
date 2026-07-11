@@ -1,0 +1,9 @@
+column:
+  data_type: VARCHAR
+  description: Phone recorded at claim submission (may be blank).
+  exclude_from_change_detection: false
+  length: 20
+  name: contact_phone
+  nullable:
+    default: true
+  preserve_literal_null: false

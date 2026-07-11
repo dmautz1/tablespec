@@ -72,6 +72,18 @@ class DbtRunResult:
     project_dir: Path
     duckdb_path: Path
 
+    def validation_report(self):  # noqa: ANN201 - lazy import keeps dbt<->validation decoupled
+        """The run's validations as a :class:`ValidationReport`.
+
+        Parses ``<project_dir>/target/run_results.json`` (contracts, data
+        tests, node outcomes) into the repo's canonical report model -- the
+        same shape the staged GX lane produces. See
+        :mod:`tablespec.validation.dbt_results`.
+        """
+        from tablespec.validation.dbt_results import dbt_validation_report
+
+        return dbt_validation_report(self.project_dir)
+
 
 def _require_dbt(*, hint: str) -> None:
     """Fail loudly (:class:`DbtRunnerError`) when the dbt stack is absent.
@@ -87,7 +99,9 @@ def _require_dbt(*, hint: str) -> None:
     except ModuleNotFoundError:
         spec = None
     if spec is None:  # pragma: no cover - exercised via importorskip in tests
-        msg = f"dbt-core is not installed; install {hint} to run an emitted dbt project."
+        msg = (
+            f"dbt-core is not installed; install {hint} to run an emitted dbt project."
+        )
         raise DbtRunnerError(msg)
 
 
@@ -128,7 +142,10 @@ class DbtRunner:
         """
         umf_list = [umfs] if isinstance(umfs, UMF) else list(umfs)
         return self._emitter.emit(
-            umf_list, out_dir, project_name=project_name, dialect=dialect,
+            umf_list,
+            out_dir,
+            project_name=project_name,
+            dialect=dialect,
             target=target,
         )
 

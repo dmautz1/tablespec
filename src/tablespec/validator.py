@@ -300,10 +300,13 @@ def validate_table(
 
         # 8-10. Completeness checks (optional, enabled by default)
         if check_completeness:
-            # 8. Validate provenance columns are present
-            provenance_errors = validate_provenance_columns(umf)
-            for _col_name, error_msg in provenance_errors:
-                errors.append(f"Provenance column error: {error_msg}")
+            # 8. Validate provenance columns are present. Generated (gold)
+            # tables are exempt: provenance is synthesized at INGEST time on
+            # landing tables; a derived table's columns come from derivations.
+            if umf.table_type != "generated":
+                provenance_errors = validate_provenance_columns(umf)
+                for _col_name, error_msg in provenance_errors:
+                    errors.append(f"Provenance column error: {error_msg}")
 
             # 9. Validate domain types are valid
             domain_errors = validate_domain_types(umf)

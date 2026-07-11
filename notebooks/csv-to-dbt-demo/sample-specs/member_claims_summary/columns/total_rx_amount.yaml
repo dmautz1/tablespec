@@ -1,0 +1,19 @@
+column:
+  data_type: DECIMAL
+  description: Total pharmacy dollars.
+  exclude_from_change_detection: false
+  name: total_rx_amount
+  nullable:
+    default: true
+  precision: 18
+  preserve_literal_null: false
+  scale: 2
+derivation:
+  candidates:
+    - column: rx_amount
+      expression: SUM(rx_amount)
+      priority: 1
+      table: rx
+  survivorship:
+    explanation: Sum of pharmacy amounts per member.
+    strategy: single_source

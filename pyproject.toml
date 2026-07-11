@@ -49,6 +49,9 @@ duckdb = [
 tui = [
     "textual>=0.50.0",
 ]
+llm = [
+    "openai>=1.40.0",
+]
 # NOTE: dbt is intentionally NOT a user-facing extra. tablespec's runtime never
 # imports dbt -- generating a dbt project is pure-Python text emission (enforced
 # by tests/test_core_encapsulation.py::test_src_never_imports_dbt). dbt is only

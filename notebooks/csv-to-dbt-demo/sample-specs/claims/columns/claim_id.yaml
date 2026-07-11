@@ -1,0 +1,8 @@
+column:
+  data_type: VARCHAR
+  exclude_from_change_detection: false
+  length: 10
+  name: claim_id
+  nullable:
+    default: false
+  preserve_literal_null: false

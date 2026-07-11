@@ -273,6 +273,15 @@ the file functions cannot express (`header: false`, `skip_rows`, footers,
 comment/escape characters, non-UTF-8 encodings) keep the classic source
 declaration unchanged.
 
+`source.path` may also be a directory (Databricks) or a **glob**
+(`/Volumes/.../orders_*.csv`, both engines) to land many files as one batch.
+Declaring `filename_pattern` on the source refines that: its `regex` becomes a
+per-row file-name filter (`RLIKE` / `regexp_matches`) so only matching files
+load, and its `captures` populate the spec's `source: filename` columns via
+`regexp_extract` (e.g. a `file_date` column captured from
+`orders_(\d{8})\.csv`). `_source_file` and `meta_source_name` carry the
+per-row bare file name.
+
 ## 7. Run the generated pipelines
 
 Use the runtime backbone to execute the committed artifacts that `compile_umfs(...)`

@@ -1,0 +1,21 @@
+column:
+  data_type: DECIMAL
+  description: Sum of member copays across medical claims (copay_amount 
+    arrived in the 2024-02 claims file).
+  exclude_from_change_detection: false
+  name: total_copay
+  nullable:
+    default: true
+  precision: 18
+  preserve_literal_null: false
+  scale: 2
+derivation:
+  candidates:
+    - column: copay_amount
+      expression: SUM(copay_amount)
+      priority: 1
+      table: claims
+  survivorship:
+    explanation: SUM ignores NULL copays, so pre-2024-02 claims 
+      contribute nothing; members with no claims show NULL.
+    strategy: single_source

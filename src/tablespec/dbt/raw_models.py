@@ -102,8 +102,16 @@ def file_backed_source(umf_data: Mapping[str, Any] | UMF) -> DelimitedSource | N
     return source
 
 
-def _sql_str(value: str) -> str:
-    """Render *value* as a single-quoted SQL string literal (quotes doubled)."""
+def _sql_str(value: str, *, dialect: str = "duckdb") -> str:
+    """Render *value* as a single-quoted SQL string literal.
+
+    Quotes are doubled everywhere. Spark-family string literals additionally
+    treat backslash as an escape character (default parser behavior), so
+    backslashes are doubled for ``databricks`` -- this is what keeps regex
+    literals like ``orders_(\\d{8})`` intact.
+    """
+    if dialect == "databricks":
+        value = value.replace("\\", "\\\\")
     return "'" + value.replace("'", "''") + "'"
 
 
@@ -114,31 +122,53 @@ def _ident(name: str, *, dialect: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def _file_name_expr(dialect: str) -> str:
+    """Per-row bare file name of the row's source file.
+
+    ``read_files`` exposes the hidden ``_metadata`` column; duckdb's
+    ``read_csv(..., filename=true)`` adds a full-path ``filename`` column that
+    ``parse_filename`` trims to the bare name -- the shape filename-pattern
+    regexes and the raw ``_source_file`` contract expect.
+    """
+    if dialect == "databricks":
+        return "_metadata.file_name"
+    return 'parse_filename("filename")'
+
+
 def _read_relation(source: DelimitedSource, *, dialect: str) -> str:
     """Render the file-reading table function for *source* under *dialect*.
 
-    When ``quote_char`` is undeclared the argument is omitted so each engine
-    keeps its default (``"`` in both ``read_files`` and ``read_csv``).
+    ``source.path`` may be a single file, a directory (databricks), or a glob
+    (both engines). Schema evolution across a glob (e.g. a newer monthly file
+    adding a column) is enabled on both engines -- ``union_by_name=true``
+    (duckdb; without it a mixed-schema glob errors, with it missing columns
+    land NULL) and ``mergeSchema => true`` (databricks read_files; off by
+    default for CSV, which would drop later-added columns). When
+    ``quote_char`` is undeclared the argument is omitted so each engine keeps
+    its default (``"`` in both functions).
     """
     assert source.path is not None  # guaranteed by file_backed_source
-    path = _sql_str(source.path)
+    path = _sql_str(source.path, dialect=dialect)
     if dialect == "databricks":
         args = [
             path,
             "format => 'csv'",
             "header => true",
             "inferSchema => false",
-            f"sep => {_sql_str(source.delimiter)}",
+            "mergeSchema => true",
+            f"sep => {_sql_str(source.delimiter, dialect=dialect)}",
         ]
         if source.quote_char is not None:
-            args.append(f"quote => {_sql_str(source.quote_char)}")
+            args.append(f"quote => {_sql_str(source.quote_char, dialect=dialect)}")
         joined = ",\n    ".join(args)
         return f"read_files(\n    {joined}\n)"
-    # duckdb
+    # duckdb; filename=true feeds the per-row provenance/file-pattern exprs.
     args = [
         path,
         "header=true",
         "all_varchar=true",
+        "filename=true",
+        "union_by_name=true",
         f"delim={_sql_str(source.delimiter)}",
     ]
     if source.quote_char is not None:
@@ -162,15 +192,19 @@ def render_raw_model_sql(
     case the header is preserved as the UMF ``canonical_name``), and the column
     source is the UMF ``source`` field. Data columns are listed explicitly
     (all-STRING via the reader options), aliased ``<header> AS <name>`` when
-    needed. Non-data columns (``source`` in ``filename``/``metadata``/
-    ``derived`` -- e.g. the canonical provenance ``meta_*`` set) never appear
-    as file headers, so the model SYNTHESIZES them exactly like the ingest
-    pipeline would: ``meta_source_name`` gets the declared path,
-    ``meta_load_dt`` the build timestamp, everything else a typed NULL -- all
-    as STRING, matching the all-STRING raw contract. The raw-contract meta
-    columns ``_source_file`` (path literal) and ``_load_ts`` (build timestamp;
-    duckdb's ``current_timestamp`` is TIMESTAMPTZ, so it is CAST to the raw
-    contract's plain TIMESTAMP there) are appended last.
+    needed. Non-data columns never appear as file headers, so the model
+    SYNTHESIZES them exactly like the ingest pipeline would:
+
+    * ``source: filename`` columns named in ``filename_pattern.captures`` are
+      ``regexp_extract``-ed from the per-row file name;
+    * ``meta_source_name`` and the raw-contract ``_source_file`` get the
+      per-row bare file name; ``meta_load_dt`` / ``_load_ts`` the build
+      timestamp; everything else a typed NULL -- all STRING per the raw
+      contract (``_load_ts`` is TIMESTAMP; duckdb CASTs its TIMESTAMPTZ).
+
+    ``source.path`` may be a file, directory (databricks), or glob; when
+    ``filename_pattern.regex`` is declared, a per-row file-name regex filter
+    (``RLIKE`` / ``regexp_matches``) selects only matching files.
     """
     if not supports_raw_file_models(dialect):
         msg = (
@@ -187,12 +221,20 @@ def render_raw_model_sql(
         if dialect == "databricks"
         else f"CAST({now_expr} AS TIMESTAMP) AS _load_ts"
     )
+    fname = _file_name_expr(dialect)
+    pattern = source.filename_pattern
+    group_by_column: dict[str, int] = (
+        {col: grp for grp, col in pattern.captures.items()} if pattern else {}
+    )
 
     def _synthesized(name: str) -> str:
         # Mirrors what the ingest pipeline records at landing time; the values
         # SQL cannot know (checksums, offsets, pipeline identity) are NULL.
+        if pattern and name in group_by_column:
+            regex = _sql_str(pattern.regex, dialect=dialect)
+            return f"regexp_extract({fname}, {regex}, {group_by_column[name]})"
         if name == "meta_source_name":
-            return _sql_str(source.path or "")
+            return fname
         if name == "meta_load_dt":
             return f"CAST({now_expr} AS {string_type})"
         return f"CAST(NULL AS {string_type})"
@@ -209,12 +251,22 @@ def render_raw_model_sql(
             select_lines.append(
                 f"    {_ident(header, dialect=dialect)} AS {_ident(name, dialect=dialect)},"
             )
-    select_lines.append(f"    {_sql_str(source.path)} AS _source_file,")
+    select_lines.append(f"    {fname} AS _source_file,")
     select_lines.append(f"    {load_ts}")
+
+    where = ""
+    if pattern and pattern.regex:
+        regex = _sql_str(pattern.regex, dialect=dialect)
+        matcher = (
+            f"{fname} RLIKE {regex}"
+            if dialect == "databricks"
+            else f"regexp_matches({fname}, {regex})"
+        )
+        where = f"\nWHERE {matcher}"
 
     note = (
         f"-- File-backed raw landing for {table}: dbt reads the declared source\n"
-        "-- file directly and materializes the all-STRING landing table (ADR-007)\n"
+        "-- file(s) directly and materializes the all-STRING landing table (ADR-007)\n"
         "-- plus the raw-contract meta columns (_source_file, _load_ts).\n"
     )
     body = "\n".join(
@@ -225,7 +277,7 @@ def render_raw_model_sql(
         ]
     )
     config = "{{\n    config(\n        materialized='table',\n    )\n}}"
-    return f"{config}\n\n{note}{body}\n"
+    return f"{config}\n\n{note}{body}{where}\n"
 
 
 __all__ = [

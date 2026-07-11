@@ -1,0 +1,7 @@
+column:
+  data_type: VARCHAR
+  description: Pipeline version that produced the row
+  exclude_from_change_detection: false
+  name: meta_pipeline_version
+  preserve_literal_null: false
+  source: metadata
