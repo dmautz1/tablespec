@@ -9,7 +9,7 @@ tables**. No data is pre-loaded: each UMF declares
 `read_files(...)` the volume files directly, land them all-STRING (plus
 `_source_file`/`_load_ts`), and the typed cast models build on top via
 `{{ ref('raw_<t>') }}`. Specs and the dbt project are written to a workspace
-directory (`out_dir`) so they can be inspected and edited in the workspace UI.
+directory (`OUT_DIR`) so they can be inspected and edited in the workspace UI.
 
 ## Cluster requirements
 
@@ -27,10 +27,10 @@ directory (`out_dir`) so they can be inspected and edited in the workspace UI.
    feature branch merges, track `feat/databricks-notebook-dbt-defaults`).
 2. Upload one or more CSVs (comma- or pipe-delimited — detected per file from
    the header row; `"`-quoted, header row required) to the target volume via
-   **Catalog ▸ … ▸ Volumes ▸ Upload**, or point `csv_dir` at any existing
+   **Catalog ▸ … ▸ Volumes ▸ Upload**, or point `CSV_DIR` at any existing
    `/Volumes/...` directory.
 3. Run `01-csv-to-dbt`, then check the results directly in Databricks:
-   tables in `<catalog>.<schema>`, specs and the dbt project under `out_dir`
+   tables in `<catalog>.<schema>`, specs and the dbt project under `OUT_DIR`
    (default `/Workspace/Users/<you>/tablespec_out/{specs,dbt}`).
 
 ### Generating specs from the command line
@@ -50,7 +50,7 @@ with the original label preserved as `canonical_name`.
 
 ### LLM enrichment (optional)
 
-Set the `llm_endpoint` widget to a Databricks serving-endpoint name (e.g.
+Set the `LLM_ENDPOINT` variable to a Databricks serving-endpoint name (e.g.
 `databricks-claude-sonnet-4`) and the notebook enriches the derived specs
 before emitting: table/column **descriptions**, business **notes**,
 illustrative **sample values**, GX **expectations**, and cross-table **FK
@@ -73,19 +73,19 @@ and FKs run as real dbt tests at build time — review the enriched specs
 
 ### The iterate loop (CSV → edit specs → spec mode)
 
-CSV mode persists validated, editable specs to `<out_dir>/specs`. Edit them —
+CSV mode persists validated, editable specs to `<OUT_DIR>/specs`. Edit them —
 narrow types, add `primary_key`, descriptions, enums — then re-run with
-`spec_dir = <out_dir>/specs` to build the enriched pipeline. Spec mode accepts
+`SPEC_DIR = f"{OUT_DIR}/specs"` to build the enriched pipeline. Spec mode accepts
 split `table.yaml` dirs, flat `*.yaml`/`*.json`, and `*.xlsx` schema workbooks;
 every spec must carry `source: {kind: delimited, path: ...}` (relative paths
-resolve against `csv_dir`).
+resolve against `CSV_DIR`).
 
 ## Guided demo: report spec + schema-evolution ripple
 
-Set the `demo` widget to `1` and Run All. The seed cell copies the shipped
+Set `DEMO = True` in the Variables cell and Run All. The seed cell copies the shipped
 month-1 sample files (`sample-data/`) to the volume and the shipped specs
 (`sample-specs/`) — three source specs plus the **generated (gold) report
-spec** `member_claims_summary` — to `<out_dir>/specs`, then runs the whole
+spec** `member_claims_summary` — to `<OUT_DIR>/specs`, then runs the whole
 flow: dbt ingests the files, builds the gold report table, and the report
 cell writes `member_claims_summary_<date>.{csv,xlsx}` (CRLF line endings +
 row-count footer, per the spec's `metadata.output_config`).
@@ -113,10 +113,10 @@ first fails the build, and a test pins that):
 1. Copy the month-2 files to the volume (a notebook cell or the UI):
    `claims_202402.csv`, `rx_202402.csv` from `sample-data/`.
 2. Add the column to the claims source spec:
-   `tablespec column-add <out_dir>/specs/claims --name copay_amount --type DECIMAL`
+   `tablespec column-add <OUT_DIR>/specs/claims --name copay_amount --type DECIMAL`
 3. Add the derived column to the report spec — copy the shipped
    `ripple/total_copay.yaml` into
-   `<out_dir>/specs/member_claims_summary/columns/` (it derives
+   `<OUT_DIR>/specs/member_claims_summary/columns/` (it derives
    `SUM(copay_amount)` from claims; `SUM` ignores the NULLs month-1 rows get).
 4. Run All again: `total_copay` ripples into the gold table and both report
    files; `latest_claim_status` and `last_activity_date` move with the new
@@ -135,25 +135,30 @@ Every `dbt build` already executes the spec's validations — enforced contracts
 (types, not-null) and data tests (`unique`, `relationships`,
 `accepted_values`, including LLM-enriched ones). The notebook's final cell
 turns the build's `target/run_results.json` into the repo's canonical
-`ValidationReport` and writes `<out_dir>/reports/validation-report.{json,html}`
+`ValidationReport` and writes `<OUT_DIR>/reports/validation-report.{json,html}`
 — the HTML renders inline in the notebook and is browsable in the workspace
 UI. The same report is available anywhere via
 `result.validation_report()` on any `DbtRunner` result, or
 `tablespec.validation.dbt_validation_report(project_dir)`.
 
-## Widget reference
+## Variables
 
-| Widget | Default | Notes |
+Configuration lives in the notebook's **Variables** cell — edit and re-run:
+
+| Variable | Default | Notes |
 |---|---|---|
-| `repo_path` | *(empty)* | tablespec repo workspace path; empty = derived from the notebook's own location (it lives at `<repo>/notebooks/csv-to-dbt-demo/`) |
-| `catalog` | `main` | UC catalog; must exist |
-| `schema` | `tablespec_dbt_demo` | Where dbt materializes every table (`DBT_SPARK_SCHEMA`); created if missing |
-| `volume` | `raw` | UC volume with the input CSVs; created if missing |
-| `csv_dir` | *(empty)* | CSV directory; empty = the volume root. Also the base for relative spec `source.path` |
-| `spec_dir` | *(empty)* | Non-empty switches to spec mode |
-| `out_dir` | *(empty)* | Workspace directory for specs + the dbt project; empty = `/Workspace/Users/<you>/tablespec_out` |
-| `llm_endpoint` | *(empty)* | Serving-endpoint / model name for LLM spec enrichment; empty = skip (CSV mode only) |
-| `demo` | *(empty)* | `1` = seed the guided demo (sample CSVs + sample specs incl. the gold report spec) |
+| `CATALOG` | `main` | UC catalog; must exist |
+| `SCHEMA` | `tablespec_dbt_demo` | Where dbt materializes every table (`DBT_SPARK_SCHEMA`); created if missing |
+| `VOLUME` | `raw` | UC volume with the input CSVs; created if missing |
+| `CSV_DIR` | the volume root | Directory of input CSVs; also the base for relative spec `source.path` |
+| `SPEC_DIR` | `""` | Non-empty switches to spec mode (authored specs instead of CSV-derived) |
+| `OUT_DIR` | `/Workspace/Users/<you>/tablespec_out` | Workspace directory for specs, the dbt project, and reports |
+| `LLM_ENDPOINT` | `""` | Serving-endpoint / model name for LLM spec enrichment; empty = skip (CSV mode only) |
+| `DEMO` | `False` | `True` = seed the guided demo (sample CSVs + sample specs incl. the gold report spec) |
+
+The tablespec repo itself is installed from the notebook's own repo checkout
+(derived from the notebook path — the notebook lives at
+`<repo>/notebooks/csv-to-dbt-demo/`).
 
 ## Notes
 
