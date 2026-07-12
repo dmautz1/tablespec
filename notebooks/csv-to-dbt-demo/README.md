@@ -147,9 +147,9 @@ Configuration lives in the notebook's **Variables** cell — edit and re-run:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `CATALOG` | `main` | UC catalog; must exist |
-| `SCHEMA` | `tablespec_dbt_demo` | Where dbt materializes every table (`DBT_SPARK_SCHEMA`); created if missing |
-| `VOLUME` | `raw` | UC volume with the input CSVs; created if missing |
+| `CATALOG` | `dev` | UC catalog; must exist |
+| `SCHEMA` | `demo` | Where dbt materializes every table (`DBT_SPARK_SCHEMA`); created if missing |
+| `VOLUME` | `data` | UC volume with the input CSVs; created if missing |
 | `CSV_DIR` | the volume root | Directory of input CSVs; also the base for relative spec `source.path` |
 | `SPEC_DIR` | `""` | Non-empty switches to spec mode (authored specs instead of CSV-derived) |
 | `OUT_DIR` | `/Workspace/Users/<you>/tablespec_out` | Workspace directory for specs, the dbt project, and reports |

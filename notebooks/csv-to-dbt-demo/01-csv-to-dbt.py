@@ -35,9 +35,9 @@ import os
 import shutil
 from pathlib import Path
 
-CATALOG = "main"
-SCHEMA = "tablespec_dbt_demo"
-VOLUME = "raw"
+CATALOG = "dev"
+SCHEMA = "demo"
+VOLUME = "data"
 
 CSV_DIR = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"  # input CSVs
 SPEC_DIR = ""  # non-empty: use authored specs instead of deriving from CSVs
