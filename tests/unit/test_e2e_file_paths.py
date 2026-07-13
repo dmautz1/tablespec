@@ -16,6 +16,7 @@ import pytest
 from tablespec.e2e.paths import (
     _csv_table_name,
     save_specs,
+    sync_specs_with_csvs,
     umfs_from_csvs,
     umfs_from_spec_dir,
 )
@@ -183,6 +184,48 @@ def test_umfs_from_csvs_infer_types(tmp_path: Path) -> None:
     assert cols["units"].data_type == "INTEGER"
     # All-empty columns stay VARCHAR.
     assert cols["blank"].data_type == "VARCHAR"
+
+
+def test_umfs_from_csvs_primary_keys_switch_to_incremental(tmp_path: Path) -> None:
+    (tmp_path / "orders_20240101.csv").write_text("id,label\n1,a\n")
+    (tmp_path / "notes.csv").write_text("note_id,text\n1,x\n")
+
+    umfs = {
+        u.table_name: u
+        for u in umfs_from_csvs(tmp_path, primary_keys={"orders": ["id"]})
+    }
+
+    orders = umfs["orders"]
+    assert orders.primary_key == ["id"]
+    assert orders.ingestion.mode == "incremental"
+    assert orders.ingestion.order_by == ["_load_ts"]
+    assert next(c for c in orders.columns if c.name == "id").nullable.default is False
+    assert orders.canonical_name == "orders"
+    # Tables without a declared key keep the snapshot default.
+    assert umfs["notes"].ingestion.mode == "snapshot"
+    assert umfs["notes"].primary_key is None
+
+
+def test_sync_specs_with_csvs_adds_new_columns(tmp_path: Path) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "orders_20240101.csv").write_text("id,label\n1,a\n")
+    specs = tmp_path / "specs"
+    save_specs(umfs_from_csvs(data, infer_types=True), specs)
+
+    # A later file adds two columns (one typeable, one not).
+    (data / "orders_20240102.csv").write_text(
+        "id,label,copay_amount,flag\n2,b,10.50,Y\n"
+    )
+    added = sync_specs_with_csvs(specs, data_dir=data)
+
+    assert added == {"orders": ["copay_amount", "flag"]}
+    (orders,) = umfs_from_spec_dir(specs)
+    cols = {c.name: c for c in orders.columns}
+    assert cols["copay_amount"].data_type == "DECIMAL"
+    assert cols["flag"].data_type == "VARCHAR"
+    # Idempotent: a second sync adds nothing.
+    assert sync_specs_with_csvs(specs, data_dir=data) == {}
 
 
 def test_umfs_from_csvs_empty_dir_raises(tmp_path: Path) -> None:

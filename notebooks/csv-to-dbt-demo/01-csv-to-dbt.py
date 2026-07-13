@@ -1,25 +1,14 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # CSVs / specs → UMFs → dbt build
+# MAGIC # tablespec demo: CSVs → Excel specs → UMFs → dbt → gold report
 # MAGIC
-# MAGIC Derive UMF specs from CSVs in a UC volume (or load authored specs via
-# MAGIC `SPEC_DIR`), emit a dbt project, and run `dbt build` in-notebook — dbt reads
-# MAGIC the files itself and builds the typed tables in `<catalog>.<schema>`. Specs,
-# MAGIC the dbt project, and reports land in `OUT_DIR` for inspection and editing.
-# MAGIC
-# MAGIC Set `DEMO = True` for the guided demo (sample members/claims/rx files + a
-# MAGIC gold report spec) — see the README.
+# MAGIC A step-by-step, top-to-bottom guide. Before starting, upload the month-1
+# MAGIC files to the volume: `members.csv`, `med_claims_20260601.csv`,
+# MAGIC `rx_claims_20260601.csv` (from `sample-data/`).
 
 # COMMAND ----------
 
-from pathlib import Path
-
-_nb = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-REPO = str((Path("/Workspace") / Path(_nb).relative_to("/")).parents[2])
-
-# COMMAND ----------
-
-# MAGIC %pip install dbt-core dbt-spark openai -e {REPO} -q
+# MAGIC %pip install dbt-core dbt-spark openai -e /Workspace/Users/david.mautz@synaptiq.ai/tablespec-fork/src -q
 
 # COMMAND ----------
 
@@ -27,7 +16,7 @@ dbutils.library.restartPython()
 
 # COMMAND ----------
 
-# MAGIC %md ## Setup
+# MAGIC %md ## Step 1 — Setup
 
 # COMMAND ----------
 
@@ -35,108 +24,151 @@ import os
 import shutil
 from pathlib import Path
 
-CATALOG = "dev"
-SCHEMA = "demo"
-VOLUME = "data"
-
-CSV_DIR = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"  # input CSVs
-SPEC_DIR = ""  # non-empty: use authored specs instead of deriving from CSVs
-OUT_DIR = f"/Workspace/Users/{spark.sql('SELECT current_user()').first()[0]}/tablespec_out"
-
-LLM_ENDPOINT = ""  # e.g. "databricks-claude-sonnet-4" to enrich specs
-DEMO = False  # True: seed the guided demo (sample data + gold report spec)
+CATALOG, SCHEMA, VOLUME = "dev", "demo", "data"
+CSV_DIR = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
+OUT_DIR = "/Workspace/Users/david.mautz@synaptiq.ai/tablespec_out"
+PRIMARY_KEYS = {  # declared keys => incremental MERGE (new months add to the tables)
+    "members": ["member_id"],
+    "med_claims": ["ps_unique_id"],
+    "rx_claims": ["ps_unique_id"],
+}
 
 os.environ["DBT_SPARK_SCHEMA"] = SCHEMA
 spark.sql(f"USE CATALOG `{CATALOG}`")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{SCHEMA}`")
-spark.sql(f"CREATE VOLUME IF NOT EXISTS `{CATALOG}`.`{SCHEMA}`.`{VOLUME}`")
 
-if DEMO:  # upload the sample-data files to the volume yourself; specs are GENERATED from them
-    _nb = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-    DEMO_SPECS = (Path("/Workspace") / Path(_nb).relative_to("/")).parent / "sample-specs"
-    if Path(f"{OUT_DIR}/specs").exists():  # later runs reuse the generated + edited specs
-        SPEC_DIR = SPEC_DIR or f"{OUT_DIR}/specs"
+_nb = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+REPO_DEMO = (Path("/Workspace") / Path(_nb).relative_to("/")).parent
 
 # COMMAND ----------
 
-# MAGIC %md ## UMF specs
+# MAGIC %md ## Step 2 — Generate Excel spec workbooks from the volume's CSVs
+# MAGIC Monthly files are grouped into one table per feed, types are inferred
+# MAGIC from the data, and the declared primary keys set incremental MERGE.
 
 # COMMAND ----------
 
-from tablespec.e2e import save_specs, umfs_from_csvs, umfs_from_spec_dir
+from tablespec.e2e import umfs_from_csvs
+from tablespec.excel_converter import UMFToExcelConverter
 
-umfs = umfs_from_spec_dir(SPEC_DIR, data_dir=CSV_DIR) if SPEC_DIR else umfs_from_csvs(CSV_DIR, infer_types=True)
-if not SPEC_DIR:
-    save_specs(umfs, f"{OUT_DIR}/specs")
-    if DEMO:  # add the authored gold report spec to the freshly generated set
-        shutil.copytree(DEMO_SPECS, f"{OUT_DIR}/specs", dirs_exist_ok=True)
-        umfs = umfs_from_spec_dir(f"{OUT_DIR}/specs", data_dir=CSV_DIR)
-
-for u in umfs:
-    print(f"{u.table_name}  <-  {u.effective_source().path or '(generated)'}")
+Path(f"{OUT_DIR}/excel").mkdir(parents=True, exist_ok=True)
+for u in umfs_from_csvs(CSV_DIR, infer_types=True, primary_keys=PRIMARY_KEYS):
+    UMFToExcelConverter().convert(u).save(f"{OUT_DIR}/excel/{u.table_name}.xlsx")
+    print(f"{OUT_DIR}/excel/{u.table_name}.xlsx")
 
 # COMMAND ----------
 
-# MAGIC %md ## Enrich specs with an LLM (optional)
-# MAGIC Set `LLM_ENDPOINT` to add descriptions, sample values, expectations, and FK
-# MAGIC relationships. Fill-only — your edits are never overwritten.
+# MAGIC %md ## Step 3 — Convert the workbooks to UMF YAML specs
+# MAGIC The Excel workbook is the review surface; the YAML specs are the source
+# MAGIC of truth for everything downstream.
 
 # COMMAND ----------
 
-if LLM_ENDPOINT and not SPEC_DIR:
-    from tablespec.llm import enrich_specs
+from tablespec.e2e import save_specs, umfs_from_spec_dir
+from tablespec.excel_converter import ExcelToUMFConverter
 
-    print(enrich_specs(f"{OUT_DIR}/specs", model=LLM_ENDPOINT))
-    umfs = umfs_from_spec_dir(f"{OUT_DIR}/specs", data_dir=CSV_DIR)
+umfs = [ExcelToUMFConverter().convert(p)[0] for p in sorted(Path(f"{OUT_DIR}/excel").glob("*.xlsx"))]
+save_specs(umfs, f"{OUT_DIR}/specs")
+print(f"{OUT_DIR}/specs")
 
 # COMMAND ----------
 
-# MAGIC %md ## Emit the dbt project
+# MAGIC %md ## Step 4 — Build with dbt
+# MAGIC The emitted raw models read the volume files directly; the typed models
+# MAGIC MERGE the batch into `<catalog>.<schema>`.
 
 # COMMAND ----------
 
 from tablespec.dbt import DbtRunner
 
 runner = DbtRunner()
-project = runner.emit(umfs, f"{OUT_DIR}/dbt")
-print(f"{project.project_name} -> {project.project_dir}")
-
-# COMMAND ----------
-
-# MAGIC %md ## dbt build
-
-# COMMAND ----------
-
-result = runner.build(project)
+result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
 print(result.stdout)
 assert result.success, result.stderr
 
 # COMMAND ----------
 
-# MAGIC %md ## Validation report
+# MAGIC %md ## Step 5 — Validation report
 # MAGIC The build already ran the spec's validations (contracts + tests).
 
 # COMMAND ----------
 
 from tablespec.validation import write_validation_report
 
-report = result.validation_report()
-json_path, html_path = write_validation_report(report, f"{OUT_DIR}/reports")
-print(f"{report.summary()}\n{json_path}\n{html_path}")
+json_path, html_path = write_validation_report(result.validation_report(), f"{OUT_DIR}/reports")
 displayHTML(html_path.read_text())
 
 # COMMAND ----------
 
-# MAGIC %md ## Report files
-# MAGIC Specs with `metadata.output_config` export their gold tables as CSV + Excel.
+# MAGIC %md ## Step 6 — Gold report table
+# MAGIC Convert the gold report's Excel spec (shipped in the repo) to UMF, then
+# MAGIC rebuild with the gold model and re-check the validations.
+
+# COMMAND ----------
+
+from tablespec.umf_loader import UMFLoader
+
+gold, _ = ExcelToUMFConverter().convert(REPO_DEMO / "sample-specs" / "member_claims_summary.xlsx")
+UMFLoader().save(gold, f"{OUT_DIR}/specs/{gold.table_name}")
+
+umfs = umfs_from_spec_dir(f"{OUT_DIR}/specs", data_dir=CSV_DIR)
+result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
+assert result.success, result.stderr
+print(result.validation_report().summary())
+
+# COMMAND ----------
+
+# MAGIC %md ## Step 7 — Report files
+# MAGIC The gold spec's `metadata.output_config` drives a CSV (row-count footer,
+# MAGIC CRLF) + Excel export of the gold table.
 
 # COMMAND ----------
 
 from tablespec.reporting import write_report_from_spark
 
-for u in umfs:
-    if u.metadata and u.metadata.output_config:
-        gold = f"`{CATALOG}`.`{SCHEMA}`.`gold_{u.table_name}`"
-        paths = write_report_from_spark(spark, gold, u, f"{OUT_DIR}/reports")
-        print(f"{paths.csv_path}\n{paths.xlsx_path}")
-        display(spark.table(gold))
+GOLD_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`gold_{gold.table_name}`"
+paths = write_report_from_spark(spark, GOLD_TABLE, gold, f"{OUT_DIR}/reports")
+print(f"{paths.csv_path}\n{paths.xlsx_path}")
+display(spark.table(GOLD_TABLE))
+
+# COMMAND ----------
+
+# MAGIC %md ## Step 8 — Month 2 arrives (manual)
+# MAGIC In the volume: **remove** `med_claims_20260601.csv` and
+# MAGIC `rx_claims_20260601.csv`, **upload** `med_claims_20260701.csv` and
+# MAGIC `rx_claims_20260701.csv`. The new med file carries a NEW column
+# MAGIC (`telehealth_indicator`). Continue when done.
+
+# COMMAND ----------
+
+# MAGIC %md ## Step 9 — Sync the specs with the new files
+# MAGIC New columns found in the current files are appended to the specs (typed
+# MAGIC by sampling); the authored gold column for the new field comes from the
+# MAGIC repo's ripple file.
+
+# COMMAND ----------
+
+from tablespec.e2e import sync_specs_with_csvs
+
+print("added:", sync_specs_with_csvs(f"{OUT_DIR}/specs", data_dir=CSV_DIR))
+shutil.copy(REPO_DEMO / "ripple" / "telehealth_visit_count.yaml",
+            f"{OUT_DIR}/specs/member_claims_summary/columns/telehealth_visit_count.yaml")
+
+# COMMAND ----------
+
+# MAGIC %md ## Step 10 — Rebuild: the new month ADDS to the tables
+# MAGIC The MERGE keeps month-1 rows even though their files are gone, appends
+# MAGIC the new column in place, and the gold report regenerates over both months.
+
+# COMMAND ----------
+
+umfs = umfs_from_spec_dir(f"{OUT_DIR}/specs", data_dir=CSV_DIR)
+result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
+assert result.success, result.stderr
+
+display(spark.sql(f"SELECT file_dt, COUNT(*) AS claim_lines FROM `{CATALOG}`.`{SCHEMA}`.`ingested_med_claims` GROUP BY file_dt ORDER BY file_dt"))
+
+gold = next(u for u in umfs if u.table_name == gold.table_name)
+paths = write_report_from_spark(spark, GOLD_TABLE, gold, f"{OUT_DIR}/reports")
+print(f"{paths.csv_path}\n{paths.xlsx_path}")
+display(spark.table(GOLD_TABLE))

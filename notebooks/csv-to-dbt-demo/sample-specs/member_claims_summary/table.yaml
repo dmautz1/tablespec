@@ -1,3 +1,4 @@
+canonical_name: member_claims_summary
 description: Generated (gold) member-level report over the monthly 
   member, medical-claim, and pharmacy-claim feeds. Demonstrates 
   primary_key derivation, embedded-SQL expressions (CONCAT_WS, COUNT, 

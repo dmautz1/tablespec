@@ -8,7 +8,7 @@
         incremental_strategy='merge',
         file_format='delta',
         unique_key=["claim_id"],
-        on_schema_change='fail',
+        on_schema_change='append_new_columns',
         contract={'enforced': True},
     )
 }}

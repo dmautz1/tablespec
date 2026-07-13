@@ -172,7 +172,7 @@ def test_model_config_block_enforces_contract() -> None:
     files = generate_dbt_project(_umf().model_dump(exclude_none=True), dialect="duckdb")
     model_sql = files["models/metrics.sql"]
     assert "contract={'enforced': True}" in model_sql
-    assert "on_schema_change='fail'" in model_sql
+    assert "on_schema_change='append_new_columns'" in model_sql
 
 
 # ---------------------------------------------------------------------------

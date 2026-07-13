@@ -19,6 +19,7 @@ from tablespec.e2e.compile import compile_umfs
 from tablespec.e2e.manifest import CompiledArtifacts, TableArtifacts
 from tablespec.e2e.paths import (
     save_specs,
+    sync_specs_with_csvs,
     umfs_from_csvs,
     umfs_from_spec_dir,
     umfs_from_specs,
@@ -32,6 +33,7 @@ __all__ = [
     "compile_umfs",
     "run_backbone",
     "save_specs",
+    "sync_specs_with_csvs",
     "umfs_from_csvs",
     "umfs_from_spec_dir",
     "umfs_from_specs",

@@ -1,15 +1,18 @@
 # CSV → dbt demo notebook
 
-One notebook, a few lines per cell: install tablespec from the workspace repo,
-derive UMF specs from CSVs in a Unity Catalog volume (`umfs_from_csvs`) or load
-authored YAML/JSON/Excel specs (`umfs_from_spec_dir`), emit a dbt project, and
-run `dbt build` in-notebook — **dbt itself reads the CSVs and creates the
-tables**. No data is pre-loaded: each UMF declares
-`source: {kind: delimited, path: ...}`, so the emitted `raw_<t>` models
-`read_files(...)` the volume files directly, land them all-STRING (plus
-`_source_file`/`_load_ts`), and the typed cast models build on top via
-`{{ ref('raw_<t>') }}`. Specs and the dbt project are written to a workspace
-directory (`OUT_DIR`) so they can be inspected and edited in the workspace UI.
+One notebook, run top to bottom as a step-by-step guide: read the CSVs you
+uploaded to the volume → generate reviewable **Excel spec workbooks** (monthly
+file families grouped into one table per feed, DATE/DECIMAL types inferred,
+declared primary keys ⇒ incremental MERGE) → convert them to **UMF YAML
+specs** → emit and run **dbt** (the raw models read the volume files directly;
+nothing is pre-loaded) → **validation report** → convert the gold report's
+**Excel spec** (shipped in the repo) to UMF and rebuild with the **gold
+table**, exporting the CSV+Excel **report files**. Then the guide pauses: you
+swap the month-1 claim files for month-2 in the volume (the new med file
+carries a NEW column), `sync_specs_with_csvs` appends it to the specs, and the
+final rebuild MERGEs the new month into the existing tables — month-1 rows
+persist even though their files are gone. Everything lands in `OUT_DIR`
+(`excel/`, `specs/`, `dbt/`, `reports/`).
 
 ## Cluster requirements
 
@@ -29,9 +32,12 @@ directory (`OUT_DIR`) so they can be inspected and edited in the workspace UI.
    the header row; `"`-quoted, header row required) to the target volume via
    **Catalog ▸ … ▸ Volumes ▸ Upload**, or point `CSV_DIR` at any existing
    `/Volumes/...` directory.
-3. Run `01-csv-to-dbt`, then check the results directly in Databricks:
-   tables in `<catalog>.<schema>`, specs and the dbt project under `OUT_DIR`
-   (default `/Workspace/Users/<you>/tablespec_out/{specs,dbt}`).
+3. Declare the primary keys for your feeds in the notebook's `PRIMARY_KEYS`
+   dict (a declared key switches the table to incremental MERGE, so new
+   monthly batches ADD to the table; keyless tables fully rebuild).
+4. Run `01-csv-to-dbt`, then check the results directly in Databricks:
+   tables in `<catalog>.<schema>`; Excel workbooks, specs, the dbt project,
+   and reports under `OUT_DIR/{excel,specs,dbt,reports}`.
 
 ### Generating specs from the command line
 
@@ -82,21 +88,14 @@ resolve against `CSV_DIR`).
 
 ## Guided demo: report spec + schema-evolution ripple
 
-Upload the month-1 sample files to the volume yourself (`sample-data/`:
-`members.csv`, `med_claims_20260601.csv`, `rx_claims_20260601.csv` — a member
-roster plus realistic ACAS-style monthly medical and pharmacy claim extracts,
-1,000/500 lines, ~176/74 columns), then set `DEMO = True` in the Variables
-cell and Run All. The source specs are **generated from your uploaded files**
-(`umfs_from_csvs(infer_types=True)`): date-suffixed files are grouped into
-monthly-family specs (`med_claims_*.csv` glob + a `file_dt` filename capture),
-DATE/DECIMAL/INTEGER types are inferred from the data, and idempotent
-`snapshot` ingestion is set. The demo then adds the one authored artifact —
-the **gold report spec** `member_claims_summary` (`sample-specs/`) — and the
-flow runs end to end: dbt ingests the files, builds the gold report table
-(689 members), and the report cell writes
-`member_claims_summary_<date>.{csv,xlsx}` (CRLF line endings + row-count
-footer, per the spec's `metadata.output_config`). Later runs automatically
-switch to spec mode, reusing the generated specs and any edits you make.
+Upload the month-1 sample files to the volume (`sample-data/`: `members.csv`,
+`med_claims_20260601.csv`, `rx_claims_20260601.csv` — a member roster plus
+realistic ACAS-style monthly claim extracts, 1,000/500 lines, ~176/74 columns)
+and run steps 1–7. The flow generates the Excel workbooks and UMF specs from
+your files, builds the typed tables, then converts the shipped gold Excel spec
+(`sample-specs/member_claims_summary.xlsx`) and builds the gold report table
+(689 members) plus `member_claims_summary_<date>.{csv,xlsx}` (CRLF + row-count
+footer, per the spec's `metadata.output_config`).
 
 ### What each report column demonstrates
 
@@ -104,42 +103,39 @@ switch to spec mode, reusing the generated specs and any edits you make.
 |---|---|---|
 | `member_id` | `strategy: primary_key` over the member universe (`union_sources`) | all 689 members |
 | `member_name` | embedded SQL `expression: CONCAT_WS(' ', first_name, last_name)` | all |
-| `birth_dt` | 3-way `highest_priority` survivorship (members → med_claims → rx_claims) | ~150 members have a blank roster birth date that the claim feeds fill in |
+| `birth_dt` | 3-way `highest_priority` survivorship (members → med_claims → rx_claims) | ~150 members have a blank roster birth date the claim feeds fill in |
 | `med_claim_count` | `expression: COUNT(*)` + `default_value: 0` | `W000000001` (roster-only in month 1: 0) |
 | `total_med_paid` | `expression: SUM(paid_amt)` | any |
 | `latest_claim_status` | embedded SQL `expression: MAX_BY(clm_ln_status_cd, srv_start_dt)` | `W000000004` (P across 5 lines) |
 | `rx_claim_count` / `total_rx_paid` | pharmacy-side aggregates | `W000000002` (rx-only member) |
 | `last_activity_date` | `max_across_sources` survivorship → `GREATEST(MAX(srv_start_dt), MAX(disp_dt))` | `W000000063` (rx dispense wins) |
 
-### The ripple: month 2 adds a column
+### Month 2: new files, new column, data ADDS to the tables
 
-The 2026-07 med file (`med_claims_20260701.csv`) carries a NEW
-`telehealth_indicator` column (Y/N). Order matters — **upload data before
-editing specs** (the raw model's explicit column list requires the glob's
-combined headers to contain every spec column; editing first fails the build,
-and a test pins that):
+The 2026-07 med file carries a NEW `telehealth_indicator` column (Y/N).
+At step 8, remove the month-1 claim files from the volume, upload
+`med_claims_20260701.csv` + `rx_claims_20260701.csv`, and continue with
+steps 9–10:
 
-1. Copy the month-2 files to the volume (a notebook cell or the UI):
-   `med_claims_20260701.csv`, `rx_claims_20260701.csv` from `sample-data/`.
-2. Add the column to the med_claims source spec:
-   `tablespec column-add <OUT_DIR>/specs/med_claims --name telehealth_indicator --type VARCHAR --length 1`
-3. Add the derived column to the report spec — copy the shipped
-   `ripple/telehealth_visit_count.yaml` into
-   `<OUT_DIR>/specs/member_claims_summary/columns/` (it derives
-   `SUM(CASE WHEN telehealth_indicator = 'Y' THEN 1 ELSE 0 END)` from
-   med_claims; month-1 rows read the missing column as NULL and contribute
-   nothing).
-4. Run All again: `telehealth_visit_count` ripples into the gold table and
-   both report files (170 telehealth lines across 146 members);
-   `latest_claim_status` and `last_activity_date` move with the new month's
-   data.
+1. `sync_specs_with_csvs` reads the files now present and APPENDS
+   `telehealth_indicator` to the med_claims spec (typed by sampling; nothing
+   is ever removed or retyped).
+2. The incremental MERGE (from your `PRIMARY_KEYS`) upserts the new batch —
+   month-1 rows persist in the tables even though their files are gone, and
+   the new column is appended in place (`on_schema_change:
+   append_new_columns`).
+3. The sync cell also copies the shipped `ripple/telehealth_visit_count.yaml`
+   into the gold spec (the authored derived column:
+   `SUM(CASE WHEN telehealth_indicator = 'Y' THEN 1 ELSE 0 END)`; month-1
+   rows read the missing column as NULL and contribute nothing).
+4. The report files regenerate over both months: 2,000 med lines, 170
+   telehealth lines across 146 members, and the activity dates/statuses move.
 
 Notes: report column order is alphabetical (split-format load order); glob
 schema evolution uses duckdb `union_by_name=true` / Databricks
-`mergeSchema => true` (columns are matched by NAME, so the new column's
-position mid-header doesn't matter — verify mergeSchema once on your DBR
-version); `file_dt` on the claim specs is captured from the file names via
-`filename_pattern`.
+`mergeSchema => true` (columns matched by NAME — verify mergeSchema once on
+your DBR version); `file_dt` on the claim specs is captured from the file
+names via `filename_pattern`.
 
 ### Validation report
 
@@ -155,22 +151,14 @@ UI. The same report is available anywhere via
 
 ## Variables
 
-Configuration lives in the notebook's **Variables** cell — edit and re-run:
+Configuration lives in the notebook's **Step 1 — Setup** cell — edit and run:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `CATALOG` | `dev` | UC catalog; must exist |
-| `SCHEMA` | `demo` | Where dbt materializes every table (`DBT_SPARK_SCHEMA`); created if missing |
-| `VOLUME` | `data` | UC volume with the input CSVs; created if missing |
-| `CSV_DIR` | the volume root | Directory of input CSVs; also the base for relative spec `source.path` |
-| `SPEC_DIR` | `""` | Non-empty switches to spec mode (authored specs instead of CSV-derived) |
-| `OUT_DIR` | `/Workspace/Users/<you>/tablespec_out` | Workspace directory for specs, the dbt project, and reports |
-| `LLM_ENDPOINT` | `""` | Serving-endpoint / model name for LLM spec enrichment; empty = skip (CSV mode only) |
-| `DEMO` | `False` | `True` = seed the guided demo (sample CSVs + sample specs incl. the gold report spec) |
-
-The tablespec repo itself is installed from the notebook's own repo checkout
-(derived from the notebook path — the notebook lives at
-`<repo>/notebooks/csv-to-dbt-demo/`).
+| `CATALOG` / `SCHEMA` / `VOLUME` | `dev` / `demo` / `data` | UC location; catalog and volume must exist, schema is created |
+| `CSV_DIR` | the volume root | Directory of the uploaded input CSVs |
+| `OUT_DIR` | `/Workspace/Users/<you>/tablespec_out` | Workspace directory for Excel workbooks, specs, the dbt project, and reports |
+| `PRIMARY_KEYS` | demo feed keys | `{table: [key columns]}` — a declared key ⇒ incremental MERGE (months add up); keyless ⇒ full rebuild |
 
 ## Notes
 

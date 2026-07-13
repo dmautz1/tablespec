@@ -254,6 +254,7 @@ def umfs_from_csvs(
     encoding: str = "UTF-8",
     infer_types: bool = False,
     group_dated: bool = True,
+    primary_keys: dict[str, list[str]] | None = None,
 ) -> list[UMF]:
     """Path C: derive FILE-BACKED UMFs from delimited files.
 
@@ -262,9 +263,11 @@ def umfs_from_csvs(
     ``source: {kind: delimited, path: ...}`` declaration, so the dbt emitters
     render a file-reading ``raw_<t>`` model and ``dbt build`` ingests the
     file(s) itself -- nothing is pre-loaded (see ``tablespec.dbt.raw_models``).
-    Generated specs declare ``ingestion: {mode: snapshot}``: the raw model
-    re-reads every matching file each run, so a full rebuild is the idempotent
-    write strategy (add a primary key + incremental mode when you want MERGE).
+    Generated specs declare ``ingestion: {mode: snapshot}`` (full idempotent
+    rebuild from the current files) -- UNLESS *primary_keys* names a key for
+    the table, which switches it to ``incremental`` MERGE ordered by
+    ``_load_ts``: each run upserts the current batch, so previously loaded
+    rows persist when older files rotate out of the glob.
 
     With *group_dated* (default), files whose stems end in a date suffix
     (``med_claims_20260601.csv``, ``fees_202401.csv``) are grouped into ONE
@@ -291,6 +294,9 @@ def umfs_from_csvs(
             (leading-zero codes stay VARCHAR). Default off: the all-VARCHAR
             starter spec the engineer enriches.
         group_dated: group date-suffixed files into monthly-family tables.
+        primary_keys: ``{table_name: [key columns]}`` -- declares the key
+            (columns become non-nullable) and switches the table to
+            incremental MERGE ingestion.
 
     Returns:
         The derived :class:`UMF` models, sorted by table name.
@@ -366,6 +372,10 @@ def umfs_from_csvs(
             for prov in PROVENANCE_COLUMNS.values()
             if prov["name"] not in {c["name"] for c in columns}
         )
+        key = (primary_keys or {}).get(table) or []
+        for col in columns:
+            if col["name"] in key:
+                col["nullable"] = {"default": False}
         source = DelimitedSource.model_validate(
             {
                 "kind": "delimited",
@@ -384,13 +394,99 @@ def umfs_from_csvs(
                 {
                     "version": "1.0",
                     "table_name": table,
-                    "ingestion": {"mode": "snapshot"},
+                    "canonical_name": table,
+                    **({"primary_key": key} if key else {}),
+                    "ingestion": (
+                        {"mode": "incremental", "order_by": ["_load_ts"]}
+                        if key
+                        else {"mode": "snapshot"}
+                    ),
                     "columns": columns,
                     "source": source,
                 }
             )
         )
     return umfs
+
+
+def sync_specs_with_csvs(
+    spec_dir: str | Path,
+    *,
+    data_dir: str | Path | None = None,
+    infer_types: bool = True,
+) -> dict[str, list[str]]:
+    """Add columns that appeared in NEW files to the existing specs.
+
+    The schema-evolution companion to :func:`umfs_from_csvs`: for every
+    split-format spec under *spec_dir* with a delimited ``source.path``, read
+    the headers of every file currently matching that path (a glob matches the
+    files present NOW) and APPEND any column the spec does not know yet (typed
+    via the same sampling as ``infer_types``). Nothing is ever removed or
+    retyped -- specs only grow, and human edits are untouched.
+
+    Args:
+        spec_dir: directory of split-format specs (``<t>/table.yaml``).
+        data_dir: base for resolving relative source paths.
+        infer_types: type the new columns by sampling (else VARCHAR).
+
+    Returns:
+        ``{table_name: [added column names]}`` for tables that changed.
+    """
+    import glob as globlib
+
+    from tablespec.models.umf import DelimitedSource, UMFColumn
+    from tablespec.umf_loader import UMFLoader
+
+    loader = UMFLoader()
+    base = Path(spec_dir)
+    added: dict[str, list[str]] = {}
+    for table_yaml in sorted(base.rglob("table.yaml")):
+        umf = loader.load(table_yaml.parent)
+        src = umf.source
+        if not (isinstance(src, DelimitedSource) and src.path):
+            continue
+        path = Path(src.path)
+        if not path.is_absolute() and data_dir is not None:
+            path = Path(data_dir) / path
+        files = sorted(Path(p) for p in globlib.glob(str(path)))
+        known = {c.name for c in umf.columns}
+        new_columns: list[dict[str, Any]] = []
+        for file in files:
+            sep = src.delimiter or _sniff_delimiter(file, src.encoding)
+            headers = _csv_header(
+                file, delimiter=sep, quote_char=src.quote_char, encoding=src.encoding
+            )
+            fresh = [h for h in headers if _csv_column(h)["name"] not in known]
+            if not fresh:
+                continue
+            updates = (
+                _infer_column_types(
+                    file,
+                    headers,
+                    delimiter=sep,
+                    quote_char=src.quote_char,
+                    encoding=src.encoding,
+                )
+                if infer_types
+                else {}
+            )
+            for header in fresh:
+                col = _csv_column(header)
+                col.update(updates.get(header, {}))
+                new_columns.append(col)
+                known.add(col["name"])
+        if new_columns:
+            umf = umf.model_copy(
+                update={
+                    "columns": [
+                        *umf.columns,
+                        *(UMFColumn.model_validate(c) for c in new_columns),
+                    ]
+                }
+            )
+            loader.save(umf, table_yaml.parent)
+            added[umf.table_name] = [c["name"] for c in new_columns]
+    return added
 
 
 def umfs_from_spec_dir(

@@ -603,6 +603,10 @@ class UMFToExcelConverter:
             data.append(
                 ("source", json.dumps(umf.source.model_dump(exclude_none=True)))
             )
+        if umf.ingestion is not None:
+            data.append(
+                ("ingestion", json.dumps(umf.ingestion.model_dump(exclude_none=True)))
+            )
 
         row = 2
         for field, value in data:
@@ -1579,7 +1583,13 @@ class UMFToExcelConverter:
         for key, value in metadata.items():
             ws[f"A{row}"] = key
             self._apply_font_to_cell(ws[f"A{row}"], self._get_default_font())
-            ws[f"B{row}"] = str(value)
+            # Structured values (lists like source_tables, dicts like
+            # output_config) are JSON so the import can reconstruct them typed;
+            # scalars stay plain strings.
+            if isinstance(value, (list, dict)):
+                ws[f"B{row}"] = json.dumps(value)
+            else:
+                ws[f"B{row}"] = str(value)
             self._apply_font_to_cell(ws[f"B{row}"], self._get_default_font())
             row += 1
 
@@ -1864,13 +1874,13 @@ class ExcelToUMFConverter:
                     "source_sheet_name",
                 ):
                     schema[field] = value
-                elif field == "source" and isinstance(value, str):
+                elif field in ("source", "ingestion") and isinstance(value, str):
                     try:
-                        source_data = json.loads(value)
+                        block = json.loads(value)
                     except json.JSONDecodeError:
                         continue
-                    if isinstance(source_data, dict):
-                        schema["source"] = source_data
+                    if isinstance(block, dict):
+                        schema[field] = block
 
         return schema
 
@@ -2554,6 +2564,18 @@ class ExcelToUMFConverter:
                     if value and isinstance(value, (int, float, str))
                     else None
                 )
+            elif isinstance(value, str) and value[:1] in "[{":
+                # Structured values round-trip as JSON (legacy workbooks may
+                # carry Python reprs -- literal_eval covers those).
+                import ast
+
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    try:
+                        value = ast.literal_eval(value)
+                    except (ValueError, SyntaxError):
+                        pass
 
             metadata[field] = value
 

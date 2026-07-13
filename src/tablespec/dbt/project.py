@@ -86,9 +86,10 @@ def _config_block(
         lines.append(f"        unique_key=[{keys}],")
     if contract:
         # An incremental model with an enforced contract MUST pin on_schema_change
-        # (dbt rejects the default 'ignore'); 'fail' surfaces a column-set drift.
+        # (dbt rejects the default 'ignore'); 'append_new_columns' lets a grown
+        # spec evolve the relation in place (removals/retypes still fail).
         if mat.strategy == "incremental":
-            lines.append("        on_schema_change='fail',")
+            lines.append("        on_schema_change='append_new_columns',")
         lines.append(render_contract_config_arg())
     lines.append("    )")
     lines.append("}}")

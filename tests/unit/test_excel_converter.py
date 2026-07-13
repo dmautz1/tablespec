@@ -1343,3 +1343,82 @@ class TestDataValidationLimits:
             (f or "").startswith(f"'{ExcelConstants.SHEET_INSTRUCTIONS}'!$P$")
             for f in formulas
         ), formulas
+
+
+class TestPipelineBlocksRoundTrip:
+    """ingestion + typed metadata (source_tables, output_config) round-trip."""
+
+    def _round_trip(self, umf, tmp_path):
+        from tablespec.excel_converter import ExcelToUMFConverter, UMFToExcelConverter
+
+        path = tmp_path / "rt.xlsx"
+        UMFToExcelConverter().convert(umf).save(path)
+        back, _ = ExcelToUMFConverter().convert(path)
+        return back
+
+    def test_ingestion_and_source_path_round_trip(self, tmp_path):
+        from tablespec.models.umf import UMF
+
+        umf = UMF.model_validate(
+            {
+                "version": "1.0",
+                "table_name": "orders",
+                "canonical_name": "orders",
+                "primary_key": ["order_id"],
+                "ingestion": {"mode": "incremental", "order_by": ["_load_ts"]},
+                "source": {
+                    "kind": "delimited",
+                    "delimiter": "|",
+                    "header": True,
+                    "path": "/data/orders_*.csv",
+                    "filename_pattern": {
+                        "regex": r"orders_(\d{8})\.csv",
+                        "captures": {1: "file_dt"},
+                    },
+                },
+                "columns": [
+                    {
+                        "name": "order_id",
+                        "data_type": "VARCHAR",
+                        "nullable": {"default": False},
+                    }
+                ],
+            }
+        )
+        back = self._round_trip(umf, tmp_path)
+        assert back.primary_key == ["order_id"]
+        assert back.ingestion is not None
+        assert back.ingestion.mode == "incremental"
+        assert back.ingestion.order_by == ["_load_ts"]
+        assert back.source is not None and back.source.path == "/data/orders_*.csv"
+        assert back.source.filename_pattern.captures == {1: "file_dt"}
+
+    def test_structured_metadata_round_trips_typed(self, tmp_path):
+        from tablespec.models.umf import UMF
+
+        umf = UMF.model_validate(
+            {
+                "version": "1.0",
+                "table_name": "report",
+                "canonical_name": "report",
+                "table_type": "generated",
+                "metadata": {
+                    "base_table_strategy": "union_sources",
+                    "source_tables": ["a", "b"],
+                    "output_config": {
+                        "include_footer": True,
+                        "line_terminator": "CRLF",
+                        "file_naming_example": "report_YYYYMMDD.csv",
+                    },
+                },
+                "columns": [{"name": "k", "data_type": "VARCHAR"}],
+            }
+        )
+        back = self._round_trip(umf, tmp_path)
+        assert back.metadata is not None
+        assert back.metadata.base_table_strategy == "union_sources"
+        assert back.metadata.source_tables == ["a", "b"]
+        config = back.metadata.output_config
+        assert config is not None and config.include_footer is True
+        assert config.line_terminator == "CRLF"
+        assert config.file_naming_example == "report_YYYYMMDD.csv"

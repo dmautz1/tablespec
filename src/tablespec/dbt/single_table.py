@@ -63,11 +63,13 @@ def _model_config(ingest: IngestSelect) -> str:
     ``data_type`` + ``constraints:`` declared in ``schema.yml``.
 
     An incremental model with an enforced contract MUST pin ``on_schema_change``
-    (dbt rejects the default ``ignore``); we use ``'fail'`` so a column-set drift
-    in the SELECT surfaces loudly rather than silently mutating the relation.
+    (dbt rejects the default ``ignore``); we use ``'append_new_columns'`` so a
+    spec that GROWS a column (schema evolution -- e.g. a new monthly file adds
+    one) evolves the existing relation in place, while removals/retypes still
+    fail the contract check.
     """
     contract = render_contract_config_arg()
-    on_change = "        on_schema_change='fail',"
+    on_change = "        on_schema_change='append_new_columns',"
     # dbt-spark / dbt-databricks REJECT incremental_strategy='merge' unless the
     # relation's file_format is one of delta/iceberg/hudi (the default 'parquet'
     # raises "You can only choose this strategy when file_format is set to 'delta'
