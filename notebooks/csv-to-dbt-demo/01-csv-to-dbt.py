@@ -32,6 +32,7 @@ PRIMARY_KEYS = {  # declared keys => incremental MERGE (new months add to the ta
     "med_claims": ["ps_unique_id"],
     "rx_claims": ["ps_unique_id"],
 }
+LLM_ENDPOINT = "databricks-claude-sonnet-4"  # serving endpoint for spec enrichment
 
 os.environ["DBT_SPARK_SCHEMA"] = SCHEMA
 spark.sql(f"USE CATALOG `{CATALOG}`")
@@ -58,7 +59,20 @@ for u in umfs_from_csvs(CSV_DIR, infer_types=True, primary_keys=PRIMARY_KEYS):
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 3 — Convert the workbooks to UMF YAML specs
+# MAGIC %md ## Step 3 — Enhance the Excel specs with an LLM
+# MAGIC Descriptions, business notes, sample values, expectations, and FK
+# MAGIC relationships are added to the workbooks in place (fill-only — nothing
+# MAGIC you wrote is overwritten). Review the updated workbooks before continuing.
+
+# COMMAND ----------
+
+from tablespec.llm import enrich_excel_specs
+
+print(enrich_excel_specs(f"{OUT_DIR}/excel", model=LLM_ENDPOINT))
+
+# COMMAND ----------
+
+# MAGIC %md ## Step 4 — Convert the workbooks to UMF YAML specs
 # MAGIC The Excel workbook is the review surface; the YAML specs are the source
 # MAGIC of truth for everything downstream.
 
@@ -73,7 +87,7 @@ print(f"{OUT_DIR}/specs")
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 4 — Build with dbt
+# MAGIC %md ## Step 5 — Build with dbt
 # MAGIC The emitted raw models read the volume files directly; the typed models
 # MAGIC MERGE the batch into `<catalog>.<schema>`.
 
@@ -88,7 +102,7 @@ assert result.success, result.stderr
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 5 — Validation report
+# MAGIC %md ## Step 6 — Validation report
 # MAGIC The build already ran the spec's validations (contracts + tests).
 
 # COMMAND ----------
@@ -100,7 +114,7 @@ displayHTML(html_path.read_text())
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 6 — Gold report table
+# MAGIC %md ## Step 7 — Gold report table
 # MAGIC Convert the gold report's Excel spec (shipped in the repo) to UMF, then
 # MAGIC rebuild with the gold model and re-check the validations.
 
@@ -118,7 +132,7 @@ print(result.validation_report().summary())
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 7 — Report files
+# MAGIC %md ## Step 8 — Report files
 # MAGIC The gold spec's `metadata.output_config` drives a CSV (row-count footer,
 # MAGIC CRLF) + Excel export of the gold table.
 
@@ -133,7 +147,7 @@ display(spark.table(GOLD_TABLE))
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 8 — Month 2 arrives (manual)
+# MAGIC %md ## Step 9 — Month 2 arrives (manual)
 # MAGIC In the volume: **remove** `med_claims_20260601.csv` and
 # MAGIC `rx_claims_20260601.csv`, **upload** `med_claims_20260701.csv` and
 # MAGIC `rx_claims_20260701.csv`. The new med file carries a NEW column
@@ -141,7 +155,7 @@ display(spark.table(GOLD_TABLE))
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 9 — Sync the specs with the new files
+# MAGIC %md ## Step 10 — Sync the specs with the new files
 # MAGIC New columns found in the current files are appended to the specs (typed
 # MAGIC by sampling); the authored gold column for the new field comes from the
 # MAGIC repo's ripple file.
@@ -156,7 +170,7 @@ shutil.copy(REPO_DEMO / "ripple" / "telehealth_visit_count.yaml",
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 10 — Rebuild: the new month ADDS to the tables
+# MAGIC %md ## Step 11 — Rebuild: the new month ADDS to the tables
 # MAGIC The MERGE keeps month-1 rows even though their files are gone, appends
 # MAGIC the new column in place, and the gold report regenerates over both months.
 

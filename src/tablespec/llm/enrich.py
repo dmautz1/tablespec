@@ -104,11 +104,6 @@ def enrich_specs(
     """
     from tablespec.umf_loader import UMFLoader
 
-    unknown = set(include) - set(ENRICH_INCLUDES)
-    if unknown:
-        msg = f"Unknown enrichment pass(es) {sorted(unknown)}; valid: {ENRICH_INCLUDES}"
-        raise ValueError(msg)
-
     base = Path(spec_dir)
     loader = UMFLoader()
     table_dirs = sorted({p.parent for p in base.rglob("table.yaml")})
@@ -120,6 +115,32 @@ def enrich_specs(
     dir_by_table = {u.table_name: d for u, d in zip(umfs, table_dirs)}
 
     llm = client or LlmClient(model=model, base_url=base_url, api_key=api_key)
+    enriched, summary = enrich_umfs(umfs, llm, include=include, overwrite=overwrite)
+
+    if save:
+        for umf in enriched:
+            loader.save(umf, dir_by_table[umf.table_name])
+
+    return summary
+
+
+def enrich_umfs(
+    umfs: list[UMF],
+    llm: LlmClient,
+    *,
+    include: tuple[str, ...] = ENRICH_INCLUDES,
+    overwrite: bool = False,
+) -> tuple[list[UMF], EnrichSummary]:
+    """The enrichment core: run the LLM passes over an in-memory UMF set.
+
+    Shared by :func:`enrich_specs` (YAML dirs) and :func:`enrich_excel_specs`
+    (workbooks). Returns the enriched models plus the per-table summary.
+    """
+    unknown = set(include) - set(ENRICH_INCLUDES)
+    if unknown:
+        msg = f"Unknown enrichment pass(es) {sorted(unknown)}; valid: {ENRICH_INCLUDES}"
+        raise ValueError(msg)
+
     summary = EnrichSummary(tables=[TableEnrichment(table=u.table_name) for u in umfs])
     stats = {t.table: t for t in summary.tables}
 
@@ -170,11 +191,53 @@ def enrich_specs(
             stats[name].foreign_keys_added = fks_added
             enriched.append(umf)
 
+    return enriched, summary
+
+
+def enrich_excel_specs(
+    excel_dir: str | Path,
+    *,
+    model: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    include: tuple[str, ...] = ENRICH_INCLUDES,
+    overwrite: bool = False,
+    save: bool = True,
+    client: LlmClient | None = None,
+) -> EnrichSummary:
+    """Enrich every Excel spec workbook (``*.xlsx``) under *excel_dir*.
+
+    Each workbook is converted to a UMF, run through the same passes as
+    :func:`enrich_specs`, and written back IN PLACE -- so the reviewable
+    Excel surface carries the enrichment before anything downstream converts
+    it (descriptions/notes/sample values on the Columns sheet, expectations
+    on Validation Rules, FKs on Relationships). Same fill-only semantics.
+    """
+    from tablespec.excel_converter import ExcelToUMFConverter, UMFToExcelConverter
+
+    base = Path(excel_dir)
+    workbooks = sorted(base.glob("*.xlsx"))
+    if not workbooks:
+        msg = f"No spec workbooks (*.xlsx) under {base}"
+        raise FileNotFoundError(msg)
+    umfs = [ExcelToUMFConverter().convert(p)[0] for p in workbooks]
+    path_by_table = {u.table_name: p for u, p in zip(umfs, workbooks)}
+
+    llm = client or LlmClient(model=model, base_url=base_url, api_key=api_key)
+    enriched, summary = enrich_umfs(umfs, llm, include=include, overwrite=overwrite)
+
     if save:
         for umf in enriched:
-            loader.save(umf, dir_by_table[umf.table_name])
+            UMFToExcelConverter().convert(umf).save(path_by_table[umf.table_name])
 
     return summary
 
 
-__all__ = ["ENRICH_INCLUDES", "EnrichSummary", "TableEnrichment", "enrich_specs"]
+__all__ = [
+    "ENRICH_INCLUDES",
+    "EnrichSummary",
+    "TableEnrichment",
+    "enrich_excel_specs",
+    "enrich_specs",
+    "enrich_umfs",
+]

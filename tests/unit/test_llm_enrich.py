@@ -299,3 +299,44 @@ def test_cli_enrich_no_config_errors(
 def test_cli_enrich_response_shapes_are_json(tmp_path: Path) -> None:
     """The canned fake responses must stay valid JSON-serializable shapes."""
     assert json.loads(json.dumps(_ENRICHMENT_RESPONSE)) == _ENRICHMENT_RESPONSE
+
+
+def test_enrich_excel_specs_updates_workbooks_in_place(tmp_path: Path) -> None:
+    from tablespec.excel_converter import ExcelToUMFConverter, UMFToExcelConverter
+    from tablespec.llm.enrich import enrich_excel_specs
+
+    excel_dir = tmp_path / "excel"
+    excel_dir.mkdir()
+    for table in ("orders", "items"):
+        umf = _umf(table).model_copy(update={"canonical_name": table})
+        UMFToExcelConverter().convert(umf).save(excel_dir / f"{table}.xlsx")
+
+    fake = FakeClient()
+    summary = enrich_excel_specs(excel_dir, client=fake)  # type: ignore[arg-type]
+
+    # 2 tables x (descriptions + validations) + 1 relationships call.
+    assert len(fake.prompts) == 5
+    orders, _ = ExcelToUMFConverter().convert(excel_dir / "orders.xlsx")
+    assert orders.description == "Orders placed by customers."
+    cols = {c.name: c for c in orders.columns}
+    assert cols["orders_id"].description == "Unique order identifier."
+    assert cols["orders_id"].sample_values == ["1001", "1002", "1003"]
+    # Expectations come back through the workbook's Validation Rules sheet
+    # (the canonical accessor reads either carrier field).
+    from tablespec.expectation_utils import expectation_dicts_from_umf
+
+    assert any(
+        e["type"] == "expect_column_values_to_not_be_null"
+        for e in expectation_dicts_from_umf(orders)
+    )
+    items, _ = ExcelToUMFConverter().convert(excel_dir / "items.xlsx")
+    assert items.relationships is not None and items.relationships.foreign_keys
+    stats = {t.table: t for t in summary.tables}
+    assert stats["items"].foreign_keys_added == 1
+
+
+def test_enrich_excel_specs_no_workbooks_raises(tmp_path: Path) -> None:
+    from tablespec.llm.enrich import enrich_excel_specs
+
+    with pytest.raises(FileNotFoundError, match="No spec workbooks"):
+        enrich_excel_specs(tmp_path, client=FakeClient())  # type: ignore[arg-type]

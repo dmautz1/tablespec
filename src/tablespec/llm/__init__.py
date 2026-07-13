@@ -16,7 +16,9 @@ from tablespec.llm.enrich import (
     ENRICH_INCLUDES,
     EnrichSummary,
     TableEnrichment,
+    enrich_excel_specs,
     enrich_specs,
+    enrich_umfs,
 )
 
 __all__ = [
@@ -26,6 +28,8 @@ __all__ = [
     "LlmClient",
     "LlmConfigError",
     "TableEnrichment",
+    "enrich_excel_specs",
     "enrich_specs",
+    "enrich_umfs",
     "extract_json",
 ]

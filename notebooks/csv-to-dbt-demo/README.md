@@ -54,15 +54,17 @@ a validated split-format spec carrying `source: {kind: delimited, path: ...}`.
 Headers that are not valid identifiers are sanitized into the column `name`
 with the original label preserved as `canonical_name`.
 
-### LLM enrichment (optional)
+### LLM enrichment
 
-Set the `LLM_ENDPOINT` variable to a Databricks serving-endpoint name (e.g.
-`databricks-claude-sonnet-4`) and the notebook enriches the derived specs
-before emitting: table/column **descriptions**, business **notes**,
-illustrative **sample values**, GX **expectations**, and cross-table **FK
-relationships** (which become dbt `relationships` tests and the Excel
-Relationships sheet). Enrichment is fill-only — your edits are never
-overwritten — and skips the `meta_*` provenance columns.
+Step 3 enhances the generated **Excel spec workbooks in place**
+(`enrich_excel_specs`, using the `LLM_ENDPOINT` serving endpoint):
+table/column **descriptions**, business **notes**, illustrative **sample
+values**, GX **expectations** (Validation Rules sheet), and cross-table **FK
+relationships** (Relationships sheet — these become dbt `relationships`
+tests). Enrichment is fill-only — your edits are never overwritten — and
+skips the `meta_*` provenance columns. Review the updated workbooks before
+converting them to YAML in step 4. `enrich_specs` does the same for YAML
+spec dirs.
 
 The same capability off-notebook:
 
@@ -91,7 +93,7 @@ resolve against `CSV_DIR`).
 Upload the month-1 sample files to the volume (`sample-data/`: `members.csv`,
 `med_claims_20260601.csv`, `rx_claims_20260601.csv` — a member roster plus
 realistic ACAS-style monthly claim extracts, 1,000/500 lines, ~176/74 columns)
-and run steps 1–7. The flow generates the Excel workbooks and UMF specs from
+and run steps 1–8. The flow generates the Excel workbooks and UMF specs from
 your files, builds the typed tables, then converts the shipped gold Excel spec
 (`sample-specs/member_claims_summary.xlsx`) and builds the gold report table
 (689 members) plus `member_claims_summary_<date>.{csv,xlsx}` (CRLF + row-count
@@ -113,9 +115,9 @@ footer, per the spec's `metadata.output_config`).
 ### Month 2: new files, new column, data ADDS to the tables
 
 The 2026-07 med file carries a NEW `telehealth_indicator` column (Y/N).
-At step 8, remove the month-1 claim files from the volume, upload
+At step 9, remove the month-1 claim files from the volume, upload
 `med_claims_20260701.csv` + `rx_claims_20260701.csv`, and continue with
-steps 9–10:
+steps 10–11:
 
 1. `sync_specs_with_csvs` reads the files now present and APPENDS
    `telehealth_indicator` to the med_claims spec (typed by sampling; nothing
