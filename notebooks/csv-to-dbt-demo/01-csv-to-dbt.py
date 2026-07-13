@@ -8,7 +8,7 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install dbt-core dbt-spark openai -e /Workspace/Users/david.mautz@synaptiq.ai/tablespec-fork/src -q
+# MAGIC %pip install dbt-core dbt-spark openai /Workspace/Users/david.mautz@synaptiq.ai/tablespec-fork -q
 
 # COMMAND ----------
 
