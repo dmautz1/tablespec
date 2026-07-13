@@ -90,7 +90,7 @@ class UMFLoader:
             return str(obj)
         return obj
 
-    def load(self, path: Path) -> UMF:
+    def load(self, path: str | Path) -> UMF:
         """Load UMF from any format (auto-detect).
 
         Supports all UMF formats:
@@ -576,7 +576,9 @@ class UMFLoader:
             umf.mtime = table_file.stat().st_mtime
         return umf
 
-    def save(self, umf: UMF, path: Path, format: UMFFormat = UMFFormat.SPLIT) -> None:
+    def save(
+        self, umf: UMF, path: str | Path, format: UMFFormat = UMFFormat.SPLIT
+    ) -> None:
         """Save UMF to path in specified format.
 
         Args:
@@ -585,6 +587,7 @@ class UMFLoader:
             format: Target format (defaults to SPLIT)
 
         """
+        path = Path(path)
         if format == UMFFormat.JSON:
             self.save_json(umf, path)
         elif format == UMFFormat.SPLIT:
