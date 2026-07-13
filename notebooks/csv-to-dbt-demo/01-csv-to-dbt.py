@@ -51,14 +51,11 @@ spark.sql(f"USE CATALOG `{CATALOG}`")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{SCHEMA}`")
 spark.sql(f"CREATE VOLUME IF NOT EXISTS `{CATALOG}`.`{SCHEMA}`.`{VOLUME}`")
 
-if DEMO:
+if DEMO:  # upload the sample-data files to the volume yourself; specs are GENERATED from them
     _nb = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
-    _demo = (Path("/Workspace") / Path(_nb).relative_to("/")).parent
-    for _f in ("members.csv", "claims_202401.csv", "rx_202401.csv"):
-        shutil.copy(_demo / "sample-data" / _f, f"{CSV_DIR}/{_f}")
-    if not Path(f"{OUT_DIR}/specs").exists():
-        shutil.copytree(_demo / "sample-specs", f"{OUT_DIR}/specs")
-    SPEC_DIR = SPEC_DIR or f"{OUT_DIR}/specs"
+    DEMO_SPECS = (Path("/Workspace") / Path(_nb).relative_to("/")).parent / "sample-specs"
+    if Path(f"{OUT_DIR}/specs").exists():  # later runs reuse the generated + edited specs
+        SPEC_DIR = SPEC_DIR or f"{OUT_DIR}/specs"
 
 # COMMAND ----------
 
@@ -68,9 +65,12 @@ if DEMO:
 
 from tablespec.e2e import save_specs, umfs_from_csvs, umfs_from_spec_dir
 
-umfs = umfs_from_spec_dir(SPEC_DIR, data_dir=CSV_DIR) if SPEC_DIR else umfs_from_csvs(CSV_DIR)
+umfs = umfs_from_spec_dir(SPEC_DIR, data_dir=CSV_DIR) if SPEC_DIR else umfs_from_csvs(CSV_DIR, infer_types=True)
 if not SPEC_DIR:
     save_specs(umfs, f"{OUT_DIR}/specs")
+    if DEMO:  # add the authored gold report spec to the freshly generated set
+        shutil.copytree(DEMO_SPECS, f"{OUT_DIR}/specs", dirs_exist_ok=True)
+        umfs = umfs_from_spec_dir(f"{OUT_DIR}/specs", data_dir=CSV_DIR)
 
 for u in umfs:
     print(f"{u.table_name}  <-  {u.effective_source().path or '(generated)'}")

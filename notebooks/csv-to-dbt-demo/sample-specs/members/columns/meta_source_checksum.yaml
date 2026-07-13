@@ -1,7 +1,0 @@
-column:
-  data_type: VARCHAR
-  description: Checksum of the source artifact (ingest-computed)
-  exclude_from_change_detection: false
-  name: meta_source_checksum
-  preserve_literal_null: false
-  source: metadata

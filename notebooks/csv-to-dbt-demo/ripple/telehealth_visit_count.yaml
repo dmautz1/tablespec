@@ -1,0 +1,20 @@
+column:
+  data_type: INTEGER
+  description: Telehealth claim lines (telehealth_indicator arrived in 
+    the 2026-07 med file).
+  exclude_from_change_detection: false
+  name: telehealth_visit_count
+  nullable:
+    default: true
+  preserve_literal_null: false
+derivation:
+  candidates:
+    - column: telehealth_indicator
+      expression: SUM(CASE WHEN telehealth_indicator = 'Y' THEN 1 ELSE 0
+        END)
+      priority: 1
+      table: med_claims
+  survivorship:
+    explanation: Count of telehealth claim lines; month-1 rows (no 
+      indicator) contribute nothing.
+    strategy: single_source

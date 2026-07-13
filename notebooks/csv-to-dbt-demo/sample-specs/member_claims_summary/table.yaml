@@ -1,8 +1,8 @@
-description: Generated (gold) member-level report combining monthly 
-  member, medical-claim, and pharmacy-claim files. Demonstrates 
+description: Generated (gold) member-level report over the monthly 
+  member, medical-claim, and pharmacy-claim feeds. Demonstrates 
   primary_key derivation, embedded-SQL expressions (CONCAT_WS, COUNT, 
-  SUM, MAX_BY + order_by), highest_priority survivorship with a default,
-  and max_across_sources (GREATEST).
+  SUM, MAX_BY), highest_priority survivorship, and max_across_sources 
+  (GREATEST).
 metadata:
   base_table_strategy: union_sources
   output_config:
@@ -11,8 +11,8 @@ metadata:
     line_terminator: CRLF
   source_tables:
     - members
-    - claims
-    - rx
+    - med_claims
+    - rx_claims
 primary_key:
   - member_id
 table_name: member_claims_summary

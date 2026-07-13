@@ -33,6 +33,7 @@ LOAD; the backbone still needs a session to EXECUTE the compiled artifacts.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
@@ -120,8 +121,6 @@ def umfs_from_specs(spec_paths: list[str | Path]) -> list[UMF]:
 
 def _csv_table_name(stem: str) -> str:
     """Sanitize a CSV filename stem into a table name (``t_``-prefixed if digit-led)."""
-    import re
-
     table = re.sub(r"[^0-9a-zA-Z_]+", "_", stem).strip("_").lower()
     if table and table[0].isdigit():
         table = f"t_{table}"
@@ -171,8 +170,6 @@ def _csv_column(header: str) -> dict[str, Any]:
     as ``canonical_name`` (the UMF field for file-header labels) -- the
     emitted raw model then aliases ``<header> AS <name>``.
     """
-    import re
-
     name = re.sub(r"[^0-9a-zA-Z_]+", "_", header).strip("_")
     if not name:
         msg = f"header column {header!r} sanitizes to an empty name"
@@ -189,39 +186,114 @@ def _csv_column(header: str) -> dict[str, Any]:
     return col
 
 
+#: Filename stems ending in a date suffix (``orders_20240101`` / ``fees_202401``)
+#: are grouped into one MONTHLY-FAMILY table per base name.
+_DATED_STEM = re.compile(r"^(?P<base>.+?)_(?P<dt>\d{6}|\d{8})$")
+
+_DATE8 = re.compile(r"^(19|20)\d{2}(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])$")
+_ISO_DATE = re.compile(r"^(19|20)\d{2}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
+_DECIMAL = re.compile(r"^-?\d+\.\d+$")
+_INTEGER = re.compile(r"^-?\d{1,9}$")
+
+_INFER_SAMPLE_ROWS = 200
+
+
+def _infer_column_types(
+    path: Path,
+    headers: list[str],
+    *,
+    delimiter: str,
+    quote_char: str | None,
+    encoding: str,
+) -> dict[str, dict[str, Any]]:
+    """Infer DATE/DECIMAL/INTEGER type updates by sampling data rows.
+
+    Conservative: a type is assigned only when EVERY sampled non-empty value
+    matches, integers with leading zeros stay VARCHAR (codes like ``007``),
+    and all-empty columns stay VARCHAR. Returns ``{header: type update}``.
+    """
+    import csv
+
+    samples: dict[str, list[str]] = {h: [] for h in headers}
+    with path.open(encoding=_read_encoding(encoding), newline="") as f:
+        reader = csv.reader(f, delimiter=delimiter, quotechar=quote_char or '"')
+        next(reader, None)
+        for i, row in enumerate(reader):
+            if i >= _INFER_SAMPLE_ROWS:
+                break
+            for header, value in zip(headers, row):
+                value = value.strip()
+                if value:
+                    samples[header].append(value)
+
+    updates: dict[str, dict[str, Any]] = {}
+    for header, values in samples.items():
+        if not values:
+            continue
+        if all(_DATE8.match(v) for v in values):
+            updates[header] = {"data_type": "DATE", "format": "YYYYMMDD"}
+        elif all(_ISO_DATE.match(v) for v in values):
+            updates[header] = {"data_type": "DATE", "format": "YYYY-MM-DD"}
+        elif all(_DECIMAL.match(v) for v in values):
+            scale = min(6, max(len(v.split(".")[1]) for v in values))
+            updates[header] = {"data_type": "DECIMAL", "precision": 18, "scale": scale}
+        elif all(
+            _INTEGER.match(v)
+            and not (len(v.lstrip("-")) > 1 and v.lstrip("-")[0] == "0")
+            for v in values
+        ):
+            updates[header] = {"data_type": "INTEGER"}
+    return updates
+
+
 def umfs_from_csvs(
     csv_dir: str | Path | Sequence[str | Path],
     *,
     delimiter: str | None = None,
     quote_char: str | None = '"',
     encoding: str = "UTF-8",
+    infer_types: bool = False,
+    group_dated: bool = True,
 ) -> list[UMF]:
-    """Path C: derive FILE-BACKED UMFs from delimited files (one table per file).
+    """Path C: derive FILE-BACKED UMFs from delimited files.
 
-    Pure Python -- no Spark. Only the header row is read (the raw landing is
-    all-STRING, so every column starts as VARCHAR); the returned UMF carries a
-    ``source: {kind: delimited, path: <file>}`` declaration, so the dbt
-    emitters render a file-reading ``raw_<t>`` model and ``dbt build`` ingests
-    the file itself -- nothing is pre-loaded (see ``tablespec.dbt.raw_models``).
+    Pure Python -- no Spark. Only the header row (plus a small sample when
+    *infer_types*) is read; the returned UMF carries a
+    ``source: {kind: delimited, path: ...}`` declaration, so the dbt emitters
+    render a file-reading ``raw_<t>`` model and ``dbt build`` ingests the
+    file(s) itself -- nothing is pre-loaded (see ``tablespec.dbt.raw_models``).
+    Generated specs declare ``ingestion: {mode: snapshot}``: the raw model
+    re-reads every matching file each run, so a full rebuild is the idempotent
+    write strategy (add a primary key + incremental mode when you want MERGE).
+
+    With *group_dated* (default), files whose stems end in a date suffix
+    (``med_claims_20260601.csv``, ``fees_202401.csv``) are grouped into ONE
+    monthly-family table per base name: the source path becomes the family
+    glob (``med_claims_*.csv``), a ``filename_pattern`` captures the date into
+    a ``file_dt`` filename column, and the columns come from the family's
+    first file (a later file adding a column is the schema-evolution story --
+    add it to the spec when it arrives).
 
     Like JDBC discovery, each spec is made pipeline-complete by appending the
     canonical provenance metadata columns
     (:data:`tablespec.ingestion.constants.PROVENANCE_COLUMNS`, ``source:
-    metadata``) so it passes ``tablespec validate`` unmodified; being
-    metadata-sourced, they are synthesized at ingest and never read from the
-    file.
+    metadata``) so it passes ``tablespec validate`` unmodified.
 
     Args:
-        csv_dir: a single ``.csv`` file, a directory (every ``*.csv`` in it
-            becomes a table, table name = sanitized filename stem), or an
-            explicit sequence of file paths.
+        csv_dir: a single ``.csv`` file, a directory (every ``*.csv`` in it),
+            or an explicit sequence of file paths.
         delimiter: the field delimiter. ``None`` (default) detects pipe vs
             comma PER FILE from the header line, so a directory may mix both.
         quote_char / encoding: reader options recorded in each UMF's source
             declaration (and used for the header parse).
+        infer_types: sample up to 200 data rows and assign DATE (``YYYYMMDD``
+            or ISO), DECIMAL, or INTEGER when every sampled value matches
+            (leading-zero codes stay VARCHAR). Default off: the all-VARCHAR
+            starter spec the engineer enriches.
+        group_dated: group date-suffixed files into monthly-family tables.
 
     Returns:
-        The derived :class:`UMF` models, sorted by file name.
+        The derived :class:`UMF` models, sorted by table name.
     """
     from tablespec.ingestion.constants import PROVENANCE_COLUMNS
     from tablespec.models.umf import UMF, DelimitedSource
@@ -238,14 +310,31 @@ def umfs_from_csvs(
     else:
         paths = [Path(p) for p in csv_dir]
 
-    umfs: list[UMF] = []
-    seen: set[str] = set()
+    # Group monthly families: table name -> (representative file, glob, pattern).
+    families: dict[str, dict[str, Any]] = {}
     for path in paths:
-        table = _csv_table_name(path.stem)
-        if table in seen:
+        match = _DATED_STEM.match(path.stem) if group_dated else None
+        if match:
+            table = _csv_table_name(match.group("base"))
+            digits = len(match.group("dt"))
+            glob_path = str(path.parent / f"{match.group('base')}_*.csv")
+            pattern = {
+                "regex": rf"{re.escape(match.group('base'))}_(\d{{{digits}}})\.csv",
+                "captures": {1: "file_dt"},
+            }
+        else:
+            table, glob_path, pattern = _csv_table_name(path.stem), str(path), None
+        family = families.setdefault(
+            table, {"file": path, "path": glob_path, "pattern": pattern}
+        )
+        if not pattern and family["file"] != path:
             msg = f"Duplicate table name {table!r} (from {path.name})"
             raise ValueError(msg)
-        seen.add(table)
+
+    umfs: list[UMF] = []
+    for table in sorted(families):
+        family = families[table]
+        path = family["file"]
         sep = delimiter or _sniff_delimiter(path, encoding)
         headers = _csv_header(
             path, delimiter=sep, quote_char=quote_char, encoding=encoding
@@ -255,24 +344,47 @@ def umfs_from_csvs(
         if len(set(names)) != len(names):
             msg = f"{path} headers sanitize to duplicate column names: {names!r}"
             raise ValueError(msg)
+        if infer_types:
+            updates = _infer_column_types(
+                path, headers, delimiter=sep, quote_char=quote_char, encoding=encoding
+            )
+            for col, header in zip(columns, headers):
+                col.update(updates.get(header, {}))
+        if family["pattern"] is not None:
+            columns.append(
+                {
+                    "name": "file_dt",
+                    "data_type": "VARCHAR",
+                    "length": 8,
+                    "source": "filename",
+                    "nullable": {"default": True},
+                    "description": "Date captured from the file name.",
+                }
+            )
         columns.extend(
             dict(prov)
             for prov in PROVENANCE_COLUMNS.values()
-            if prov["name"] not in set(names)
+            if prov["name"] not in {c["name"] for c in columns}
         )
-        source = DelimitedSource(
-            kind="delimited",
-            delimiter=sep,
-            header=True,
-            quote_char=quote_char,
-            encoding=encoding,
-            path=str(path),
+        source = DelimitedSource.model_validate(
+            {
+                "kind": "delimited",
+                "delimiter": sep,
+                "header": True,
+                "quote_char": quote_char,
+                "encoding": encoding,
+                "path": family["path"],
+                **(
+                    {"filename_pattern": family["pattern"]} if family["pattern"] else {}
+                ),
+            }
         )
         umfs.append(
             UMF.model_validate(
                 {
                     "version": "1.0",
                     "table_name": table,
+                    "ingestion": {"mode": "snapshot"},
                     "columns": columns,
                     "source": source,
                 }

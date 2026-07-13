@@ -1,18 +1,18 @@
 column:
   data_type: INTEGER
-  description: Number of medical claims for the member.
+  description: Number of pharmacy claims.
   exclude_from_change_detection: false
-  name: medical_claim_count
+  name: rx_claim_count
   nullable:
     default: true
   preserve_literal_null: false
 derivation:
   candidates:
-    - column: claim_id
+    - column: ps_unique_id
       expression: COUNT(*)
       priority: 1
-      table: claims
+      table: rx_claims
   survivorship:
     default_value: 0
-    explanation: Count of medical claims per member; 0 when none.
+    explanation: Pharmacy claims per member; 0 when none.
     strategy: single_source

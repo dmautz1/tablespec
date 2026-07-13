@@ -13,6 +13,5 @@ derivation:
       priority: 1
       table: members
   survivorship:
-    explanation: Full name assembled with embedded SQL from the 
-      demographic file.
+    explanation: Full name assembled with embedded SQL from the roster.
     strategy: single_source

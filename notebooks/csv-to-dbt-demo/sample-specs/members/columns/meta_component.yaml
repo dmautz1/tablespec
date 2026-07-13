@@ -1,7 +1,0 @@
-column:
-  data_type: VARCHAR
-  description: Pipeline component that produced the row
-  exclude_from_change_detection: false
-  name: meta_component
-  preserve_literal_null: false
-  source: metadata

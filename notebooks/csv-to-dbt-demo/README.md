@@ -82,51 +82,63 @@ resolve against `CSV_DIR`).
 
 ## Guided demo: report spec + schema-evolution ripple
 
-Set `DEMO = True` in the Variables cell and Run All. The seed cell copies the shipped
-month-1 sample files (`sample-data/`) to the volume and the shipped specs
-(`sample-specs/`) — three source specs plus the **generated (gold) report
-spec** `member_claims_summary` — to `<OUT_DIR>/specs`, then runs the whole
-flow: dbt ingests the files, builds the gold report table, and the report
-cell writes `member_claims_summary_<date>.{csv,xlsx}` (CRLF line endings +
-row-count footer, per the spec's `metadata.output_config`).
+Upload the month-1 sample files to the volume yourself (`sample-data/`:
+`members.csv`, `med_claims_20260601.csv`, `rx_claims_20260601.csv` — a member
+roster plus realistic ACAS-style monthly medical and pharmacy claim extracts,
+1,000/500 lines, ~176/74 columns), then set `DEMO = True` in the Variables
+cell and Run All. The source specs are **generated from your uploaded files**
+(`umfs_from_csvs(infer_types=True)`): date-suffixed files are grouped into
+monthly-family specs (`med_claims_*.csv` glob + a `file_dt` filename capture),
+DATE/DECIMAL/INTEGER types are inferred from the data, and idempotent
+`snapshot` ingestion is set. The demo then adds the one authored artifact —
+the **gold report spec** `member_claims_summary` (`sample-specs/`) — and the
+flow runs end to end: dbt ingests the files, builds the gold report table
+(689 members), and the report cell writes
+`member_claims_summary_<date>.{csv,xlsx}` (CRLF line endings + row-count
+footer, per the spec's `metadata.output_config`). Later runs automatically
+switch to spec mode, reusing the generated specs and any edits you make.
 
 ### What each report column demonstrates
 
-| Column | Mechanism | See member |
+| Column | Mechanism | See |
 |---|---|---|
-| `member_id` | `strategy: primary_key` over the member universe (`union_sources`) | all 9 |
+| `member_id` | `strategy: primary_key` over the member universe (`union_sources`) | all 689 members |
 | `member_name` | embedded SQL `expression: CONCAT_WS(' ', first_name, last_name)` | all |
-| `contact_phone` | 3-way `highest_priority` survivorship (members → claims → rx) + `default_value` | M001 (members wins over claims), M002 (claims), M004 (rx), M007 (`UNKNOWN`) |
-| `medical_claim_count` | `expression: COUNT(*)` + `default_value: 0` | M004/M008 (0) |
-| `total_medical_amount` | `expression: SUM(claim_amount)` | any |
-| `latest_claim_status` | embedded SQL `expression: MAX_BY(claim_status, service_date)` | M002 (DENIED → PAID after month 2) |
-| `rx_fill_count` / `total_rx_amount` | rx-side aggregates | M004 |
-| `last_activity_date` | `max_across_sources` survivorship → `GREATEST(MAX(service_date), MAX(fill_date))` | M003 (rx fill wins), M008 (NULL) |
+| `birth_dt` | 3-way `highest_priority` survivorship (members → med_claims → rx_claims) | ~150 members have a blank roster birth date that the claim feeds fill in |
+| `med_claim_count` | `expression: COUNT(*)` + `default_value: 0` | `W000000001` (roster-only in month 1: 0) |
+| `total_med_paid` | `expression: SUM(paid_amt)` | any |
+| `latest_claim_status` | embedded SQL `expression: MAX_BY(clm_ln_status_cd, srv_start_dt)` | `W000000004` (P across 5 lines) |
+| `rx_claim_count` / `total_rx_paid` | pharmacy-side aggregates | `W000000002` (rx-only member) |
+| `last_activity_date` | `max_across_sources` survivorship → `GREATEST(MAX(srv_start_dt), MAX(disp_dt))` | `W000000063` (rx dispense wins) |
 
 ### The ripple: month 2 adds a column
 
-`claims_202402.csv` carries a NEW `copay_amount` column. Order matters —
-**upload data before editing specs** (the raw model's explicit column list
-requires the glob's combined headers to contain every spec column; editing
-first fails the build, and a test pins that):
+The 2026-07 med file (`med_claims_20260701.csv`) carries a NEW
+`telehealth_indicator` column (Y/N). Order matters — **upload data before
+editing specs** (the raw model's explicit column list requires the glob's
+combined headers to contain every spec column; editing first fails the build,
+and a test pins that):
 
 1. Copy the month-2 files to the volume (a notebook cell or the UI):
-   `claims_202402.csv`, `rx_202402.csv` from `sample-data/`.
-2. Add the column to the claims source spec:
-   `tablespec column-add <OUT_DIR>/specs/claims --name copay_amount --type DECIMAL`
+   `med_claims_20260701.csv`, `rx_claims_20260701.csv` from `sample-data/`.
+2. Add the column to the med_claims source spec:
+   `tablespec column-add <OUT_DIR>/specs/med_claims --name telehealth_indicator --type VARCHAR --length 1`
 3. Add the derived column to the report spec — copy the shipped
-   `ripple/total_copay.yaml` into
+   `ripple/telehealth_visit_count.yaml` into
    `<OUT_DIR>/specs/member_claims_summary/columns/` (it derives
-   `SUM(copay_amount)` from claims; `SUM` ignores the NULLs month-1 rows get).
-4. Run All again: `total_copay` ripples into the gold table and both report
-   files; `latest_claim_status` and `last_activity_date` move with the new
-   month's data.
+   `SUM(CASE WHEN telehealth_indicator = 'Y' THEN 1 ELSE 0 END)` from
+   med_claims; month-1 rows read the missing column as NULL and contribute
+   nothing).
+4. Run All again: `telehealth_visit_count` ripples into the gold table and
+   both report files (170 telehealth lines across 146 members);
+   `latest_claim_status` and `last_activity_date` move with the new month's
+   data.
 
 Notes: report column order is alphabetical (split-format load order); glob
 schema evolution uses duckdb `union_by_name=true` / Databricks
-`mergeSchema => true` (verify the latter once on your DBR version — the demo
-data also appends the new column LAST so month-1 files stay aligned);
-`file_month` on claims/rx is captured from the file names via
+`mergeSchema => true` (columns are matched by NAME, so the new column's
+position mid-header doesn't matter — verify mergeSchema once on your DBR
+version); `file_dt` on the claim specs is captured from the file names via
 `filename_pattern`.
 
 ### Validation report

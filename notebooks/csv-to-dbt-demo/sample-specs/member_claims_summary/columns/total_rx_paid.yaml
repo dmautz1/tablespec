@@ -1,8 +1,8 @@
 column:
   data_type: DECIMAL
-  description: Total medical claim dollars.
+  description: Total pharmacy paid amount.
   exclude_from_change_detection: false
-  name: total_medical_amount
+  name: total_rx_paid
   nullable:
     default: true
   precision: 18
@@ -10,10 +10,10 @@ column:
   scale: 2
 derivation:
   candidates:
-    - column: claim_amount
-      expression: SUM(claim_amount)
+    - column: paid_amt
+      expression: SUM(paid_amt)
       priority: 1
-      table: claims
+      table: rx_claims
   survivorship:
-    explanation: Sum of medical claim amounts per member.
+    explanation: Total pharmacy paid dollars per member.
     strategy: single_source

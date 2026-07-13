@@ -770,6 +770,12 @@ def import_csv(
         "--delimiter",
         help="Field delimiter (default: detect pipe vs comma per file)",
     ),
+    infer_types: bool = typer.Option(
+        False,
+        "--infer-types",
+        help="Sample data rows and assign DATE/DECIMAL/INTEGER types "
+        "(default: all-VARCHAR starter specs)",
+    ),
     force: bool = typer.Option(
         False,
         "--force",
@@ -799,7 +805,7 @@ def import_csv(
             )
             raise typer.Exit(1)
 
-        umfs = umfs_from_csvs(source, delimiter=delimiter)
+        umfs = umfs_from_csvs(source, delimiter=delimiter, infer_types=infer_types)
         save_specs(umfs, dest)
         for umf in umfs:
             src = umf.source

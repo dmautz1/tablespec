@@ -76,8 +76,7 @@ def test_umfs_from_csvs_dir(tmp_path: Path) -> None:
 
     umfs = umfs_from_csvs(tmp_path)
 
-    # sorted() on paths is ASCII-ordered: "Orders.csv" < "line items.csv".
-    assert [u.table_name for u in umfs] == ["orders", "line_items"]
+    assert [u.table_name for u in umfs] == ["line_items", "orders"]  # by table name
     for umf in umfs:
         src = umf.source
         assert isinstance(src, DelimitedSource)
@@ -132,6 +131,58 @@ def test_umfs_from_csvs_explicit_delimiter_wins(tmp_path: Path) -> None:
     assert umf.source.delimiter == "|"
     assert [c.name for c in umf.columns[:2]] == ["id", "label_extra"]
     assert umf.columns[1].canonical_name == "label, extra"
+
+
+def test_umfs_from_csvs_groups_dated_files_into_families(tmp_path: Path) -> None:
+    (tmp_path / "orders_20240101.csv").write_text("id,label\n1,a\n")
+    (tmp_path / "orders_20240102.csv").write_text("id,label\n2,b\n")
+    (tmp_path / "fees_202401.csv").write_text("id,fee\n1,2.50\n")
+    (tmp_path / "members.csv").write_text("id,name\n1,ann\n")
+
+    umfs = {u.table_name: u for u in umfs_from_csvs(tmp_path)}
+
+    assert set(umfs) == {"orders", "fees", "members"}
+    orders = umfs["orders"]
+    assert isinstance(orders.source, DelimitedSource)
+    assert orders.source.path == str(tmp_path / "orders_*.csv")
+    assert orders.source.filename_pattern is not None
+    assert orders.source.filename_pattern.regex == r"orders_(\d{8})\.csv"
+    assert orders.source.filename_pattern.captures == {1: "file_dt"}
+    file_dt = next(c for c in orders.columns if c.name == "file_dt")
+    assert file_dt.source == "filename"
+    assert umfs["fees"].source.filename_pattern.regex == r"fees_(\d{6})\.csv"
+    # Generated specs use idempotent snapshot ingestion (glob re-reads all files).
+    assert orders.ingestion is not None and orders.ingestion.mode == "snapshot"
+    # Undated files stay single-file specs without a pattern.
+    assert umfs["members"].source.path == str(tmp_path / "members.csv")
+    assert umfs["members"].source.filename_pattern is None
+
+
+def test_umfs_from_csvs_group_dated_off(tmp_path: Path) -> None:
+    (tmp_path / "orders_20240101.csv").write_text("id\n1\n")
+    (umf,) = umfs_from_csvs(tmp_path, group_dated=False)
+    assert umf.table_name == "orders_20240101"
+    assert umf.source.filename_pattern is None
+
+
+def test_umfs_from_csvs_infer_types(tmp_path: Path) -> None:
+    (tmp_path / "claims.csv").write_text(
+        "claim_id,member_cd,svc_dt,iso_dt,amount,units,code,blank\n"
+        "0100,ABC,20240105,2024-01-05,120.50,3,007,\n"
+        "0101,DEF,20240220,2024-02-20,80.00,12,019,\n"
+    )
+    (umf,) = umfs_from_csvs(tmp_path, infer_types=True)
+    cols = {c.name: c for c in umf.columns}
+    # Leading zeros keep claim_id / code as VARCHAR.
+    assert cols["claim_id"].data_type == "VARCHAR"
+    assert cols["code"].data_type == "VARCHAR"
+    assert cols["member_cd"].data_type == "VARCHAR"
+    assert cols["svc_dt"].data_type == "DATE" and cols["svc_dt"].format == "YYYYMMDD"
+    assert cols["iso_dt"].data_type == "DATE" and cols["iso_dt"].format == "YYYY-MM-DD"
+    assert cols["amount"].data_type == "DECIMAL" and cols["amount"].scale == 2
+    assert cols["units"].data_type == "INTEGER"
+    # All-empty columns stay VARCHAR.
+    assert cols["blank"].data_type == "VARCHAR"
 
 
 def test_umfs_from_csvs_empty_dir_raises(tmp_path: Path) -> None:

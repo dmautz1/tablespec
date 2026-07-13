@@ -1,7 +1,0 @@
-rx_id,member_id,member_phone,drug_name,fill_date,rx_amount
-R2101,M001,555-8888,Lisinopril,2024-02-05,10.00
-R2102,M003,,Atorvastatin,2024-02-27,32.00
-R2103,M004,555-0404,Metformin,2024-02-24,25.50
-R2104,M005,,Amoxicillin,2024-02-08,15.75
-R2105,M007,,Ibuprofen,2024-02-11,8.25
-R2106,M009,,Albuterol,2024-02-19,55.00

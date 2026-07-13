@@ -1,7 +1,0 @@
-column:
-  data_type: DATETIME
-  description: Timestamp when ingestion ran
-  exclude_from_change_detection: false
-  name: meta_load_dt
-  preserve_literal_null: false
-  source: metadata

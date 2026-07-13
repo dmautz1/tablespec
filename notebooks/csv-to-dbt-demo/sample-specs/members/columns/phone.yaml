@@ -1,9 +1,0 @@
-column:
-  data_type: VARCHAR
-  description: Member phone from the demographic file (may be blank).
-  exclude_from_change_detection: false
-  length: 20
-  name: phone
-  nullable:
-    default: true
-  preserve_literal_null: false
