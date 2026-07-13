@@ -81,9 +81,9 @@ and FKs run as real dbt tests at build time — review the enriched specs
 
 ### The iterate loop (CSV → edit specs → spec mode)
 
-CSV mode persists validated, editable specs to `<OUT_DIR>/specs`. Edit them —
+CSV mode persists validated, editable specs to `<OUT_DIR>/umf`. Edit them —
 narrow types, add `primary_key`, descriptions, enums — then re-run with
-`SPEC_DIR = f"{OUT_DIR}/specs"` to build the enriched pipeline. Spec mode accepts
+`SPEC_DIR = f"{OUT_DIR}/umf"` to build the enriched pipeline. Spec mode accepts
 split `table.yaml` dirs, flat `*.yaml`/`*.json`, and `*.xlsx` schema workbooks;
 every spec must carry `source: {kind: delimited, path: ...}` (relative paths
 resolve against `CSV_DIR`).
@@ -94,8 +94,8 @@ Upload the month-1 sample files to the volume (`sample-data/`: `members.csv`,
 `med_claims_20260601.csv`, `rx_claims_20260601.csv` — a member roster plus
 realistic ACAS-style monthly claim extracts, 1,000/500 lines, ~176/74 columns)
 and run steps 1–8. The flow generates the Excel workbooks and UMF specs from
-your files, builds the typed tables, then converts the shipped gold Excel spec
-(`sample-specs/member_claims_summary.xlsx`) and builds the gold report table
+your files, builds the typed tables, then adds the shipped gold UMF spec
+(`sample-specs/member_claims_summary/`) and builds the gold report table
 (689 members) plus `member_claims_summary_<date>.{csv,xlsx}` (CRLF + row-count
 footer, per the spec's `metadata.output_config`).
 

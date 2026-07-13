@@ -82,8 +82,8 @@ from tablespec.e2e import save_specs, umfs_from_spec_dir
 from tablespec.excel_converter import ExcelToUMFConverter
 
 umfs = [ExcelToUMFConverter().convert(p)[0] for p in sorted(Path(f"{OUT_DIR}/excel").glob("*.xlsx"))]
-save_specs(umfs, f"{OUT_DIR}/specs")
-print(f"{OUT_DIR}/specs")
+save_specs(umfs, f"{OUT_DIR}/umf")
+print(f"{OUT_DIR}/umf")
 
 # COMMAND ----------
 
@@ -115,17 +115,20 @@ displayHTML(html_path.read_text())
 # COMMAND ----------
 
 # MAGIC %md ## Step 7 — Gold report table
-# MAGIC Convert the gold report's Excel spec (shipped in the repo) to UMF, then
-# MAGIC rebuild with the gold model and re-check the validations.
+# MAGIC Add the gold report's UMF spec (shipped in the repo) to the spec set,
+# MAGIC then rebuild with the gold model and re-check the validations. The UMFs
+# MAGIC are the living artifact: developers and analysts adjust derivations and
+# MAGIC rules there over time.
 
 # COMMAND ----------
 
 from tablespec.umf_loader import UMFLoader
 
-gold, _ = ExcelToUMFConverter().convert(REPO_DEMO / "sample-specs" / "member_claims_summary.xlsx")
-UMFLoader().save(gold, f"{OUT_DIR}/specs/{gold.table_name}")
+loader = UMFLoader()
+gold = loader.load(REPO_DEMO / "sample-specs" / "member_claims_summary")
+loader.save(gold, f"{OUT_DIR}/umf/{gold.table_name}")
 
-umfs = umfs_from_spec_dir(f"{OUT_DIR}/specs", data_dir=CSV_DIR)
+umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
 result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
 assert result.success, result.stderr
 print(result.validation_report().summary())
@@ -164,9 +167,9 @@ display(spark.table(GOLD_TABLE))
 
 from tablespec.e2e import sync_specs_with_csvs
 
-print("added:", sync_specs_with_csvs(f"{OUT_DIR}/specs", data_dir=CSV_DIR))
+print("added:", sync_specs_with_csvs(f"{OUT_DIR}/umf", data_dir=CSV_DIR))
 shutil.copy(REPO_DEMO / "ripple" / "telehealth_visit_count.yaml",
-            f"{OUT_DIR}/specs/member_claims_summary/columns/telehealth_visit_count.yaml")
+            f"{OUT_DIR}/umf/member_claims_summary/columns/telehealth_visit_count.yaml")
 
 # COMMAND ----------
 
@@ -176,7 +179,7 @@ shutil.copy(REPO_DEMO / "ripple" / "telehealth_visit_count.yaml",
 
 # COMMAND ----------
 
-umfs = umfs_from_spec_dir(f"{OUT_DIR}/specs", data_dir=CSV_DIR)
+umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
 result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
 assert result.success, result.stderr
 
