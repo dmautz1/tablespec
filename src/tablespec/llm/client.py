@@ -5,7 +5,8 @@ protocol (Databricks Foundation Model serving, Anthropic/OpenAI gateways,
 OpenRouter, ...). Configuration resolves in order:
 
 1. Explicit constructor arguments.
-2. ``TABLESPEC_LLM_BASE_URL`` / ``TABLESPEC_LLM_API_KEY`` / ``TABLESPEC_LLM_MODEL``.
+2. ``TABLESPEC_LLM_BASE_URL`` / ``TABLESPEC_LLM_API_KEY`` / ``TABLESPEC_LLM_MODEL``
+   (plus ``TABLESPEC_LLM_MAX_TOKENS`` for the output cap).
 3. On a Databricks runtime: the workspace's own serving endpoint
    (``https://<workspace>/serving-endpoints``) with ambient notebook auth and
    the :data:`DEFAULT_DATABRICKS_MODEL` pay-per-token endpoint -- zero config
@@ -25,10 +26,17 @@ from typing import Any
 _ENV_BASE_URL = "TABLESPEC_LLM_BASE_URL"
 _ENV_API_KEY = "TABLESPEC_LLM_API_KEY"
 _ENV_MODEL = "TABLESPEC_LLM_MODEL"
+_ENV_MAX_TOKENS = "TABLESPEC_LLM_MAX_TOKENS"
 
 #: Databricks pay-per-token Foundation Model endpoint used when nothing else
 #: is configured on a Databricks runtime.
 DEFAULT_DATABRICKS_MODEL = "databricks-claude-sonnet-4"
+
+#: Output-token cap requested per completion. Enrichment responses for wide
+#: tables (100+ columns) run well past typical provider defaults, so an
+#: explicit cap is always sent. Override via ``TABLESPEC_LLM_MAX_TOKENS`` or
+#: ``LlmClient(max_tokens=...)``.
+DEFAULT_MAX_TOKENS = 16384
 
 
 class LlmConfigError(RuntimeError):
@@ -94,10 +102,13 @@ class LlmClient:
         base_url: str | None = None,
         api_key: str | None = None,
         temperature: float = 0.1,
+        max_tokens: int | None = None,
     ) -> None:
         base_url = base_url or os.environ.get(_ENV_BASE_URL)
         api_key = api_key or os.environ.get(_ENV_API_KEY)
         model = model or os.environ.get(_ENV_MODEL)
+        if max_tokens is None:
+            max_tokens = int(os.environ.get(_ENV_MAX_TOKENS, DEFAULT_MAX_TOKENS))
 
         if not (base_url and api_key):
             ambient = _databricks_defaults()
@@ -126,6 +137,7 @@ class LlmClient:
 
         self.model = model
         self.temperature = temperature
+        self.max_tokens = max_tokens
         self._client = OpenAI(base_url=base_url, api_key=api_key)
 
     def complete(self, prompt: str, *, system: str | None = None) -> str:
@@ -138,9 +150,17 @@ class LlmClient:
             model=self.model,
             messages=messages,  # pyright: ignore[reportArgumentType]
             temperature=self.temperature,
+            max_tokens=self.max_tokens,
         )
-        content = response.choices[0].message.content
-        return content or ""
+        choice = response.choices[0]
+        if choice.finish_reason == "length":
+            msg = (
+                f"LLM response was truncated at max_tokens={self.max_tokens}. "
+                f"Raise the cap via {_ENV_MAX_TOKENS} or "
+                "LlmClient(max_tokens=...)."
+            )
+            raise ValueError(msg)
+        return choice.message.content or ""
 
     def complete_json(self, prompt: str, *, system: str | None = None) -> Any:
         """One chat completion parsed as JSON (markdown fences tolerated)."""
@@ -149,6 +169,7 @@ class LlmClient:
 
 __all__ = [
     "DEFAULT_DATABRICKS_MODEL",
+    "DEFAULT_MAX_TOKENS",
     "LlmClient",
     "LlmConfigError",
     "extract_json",

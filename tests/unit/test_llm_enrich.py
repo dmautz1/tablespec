@@ -241,6 +241,62 @@ def test_client_requires_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
         LlmClient()
 
 
+def _client_with_fake_openai(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    finish_reason: str = "stop",
+    **client_kwargs: Any,
+) -> tuple[Any, dict[str, Any]]:
+    """An LlmClient wired to a stub openai module; returns (client, call kwargs)."""
+    import sys
+    from types import SimpleNamespace
+
+    calls: dict[str, Any] = {}
+
+    def create(**kwargs: Any) -> Any:
+        calls.update(kwargs)
+        message = SimpleNamespace(content='{"ok": true}')
+        choice = SimpleNamespace(finish_reason=finish_reason, message=message)
+        return SimpleNamespace(choices=[choice])
+
+    class FakeOpenAI:
+        def __init__(self, base_url: str, api_key: str) -> None:
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=create))
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+    from tablespec.llm.client import LlmClient
+
+    client = LlmClient(model="m", base_url="http://x", api_key="k", **client_kwargs)
+    return client, calls
+
+
+def test_client_sends_default_max_tokens(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tablespec.llm.client import DEFAULT_MAX_TOKENS
+
+    monkeypatch.delenv("TABLESPEC_LLM_MAX_TOKENS", raising=False)
+    client, calls = _client_with_fake_openai(monkeypatch)
+    assert client.complete_json("hi") == {"ok": True}
+    assert calls["max_tokens"] == DEFAULT_MAX_TOKENS
+
+
+def test_client_max_tokens_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TABLESPEC_LLM_MAX_TOKENS", "123")
+    client, calls = _client_with_fake_openai(monkeypatch)
+    client.complete("hi")
+    assert calls["max_tokens"] == 123
+
+    client, calls = _client_with_fake_openai(monkeypatch, max_tokens=456)
+    client.complete("hi")
+    assert calls["max_tokens"] == 456  # explicit arg beats the env var
+
+
+def test_client_truncated_response_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TABLESPEC_LLM_MAX_TOKENS", raising=False)
+    client, _ = _client_with_fake_openai(monkeypatch, finish_reason="length")
+    with pytest.raises(ValueError, match="truncated at max_tokens"):
+        client.complete("hi")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
