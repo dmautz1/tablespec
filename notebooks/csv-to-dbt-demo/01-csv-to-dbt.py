@@ -130,7 +130,7 @@ loader.save(gold, f"{OUT_DIR}/umf/{gold.table_name}")
 
 umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
 result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
-assert result.success, result.stderr
+assert result.success, f"{result.stdout}\n{result.stderr}"
 print(result.validation_report().summary())
 
 # COMMAND ----------
@@ -181,7 +181,7 @@ shutil.copy(REPO_DEMO / "ripple" / "telehealth_visit_count.yaml",
 
 umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
 result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
-assert result.success, result.stderr
+assert result.success, f"{result.stdout}\n{result.stderr}"
 
 display(spark.sql(f"SELECT file_dt, COUNT(*) AS claim_lines FROM `{CATALOG}`.`{SCHEMA}`.`ingested_med_claims` GROUP BY file_dt ORDER BY file_dt"))
 
