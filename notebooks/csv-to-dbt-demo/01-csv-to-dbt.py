@@ -154,7 +154,8 @@ display(spark.table(GOLD_TABLE))
 # MAGIC In the volume: **remove** `med_claims_20260601.csv` and
 # MAGIC `rx_claims_20260601.csv`, **upload** `med_claims_20260701.csv` and
 # MAGIC `rx_claims_20260701.csv`. The new med file carries a NEW column
-# MAGIC (`telehealth_indicator`). Continue when done.
+# MAGIC (`telehealth_indicator`). Continue when done — if the session restarted
+# MAGIC in the meantime, rerun the install cell and Step 1 first.
 
 # COMMAND ----------
 
@@ -176,16 +177,24 @@ shutil.copy(REPO_DEMO / "ripple" / "telehealth_visit_count.yaml",
 # MAGIC %md ## Step 11 — Rebuild: the new month ADDS to the tables
 # MAGIC The MERGE keeps month-1 rows even though their files are gone, appends
 # MAGIC the new column in place, and the gold report regenerates over both months.
+# MAGIC Self-contained (needs only Step 1's setup), so a restarted cluster can
+# MAGIC resume here after the manual upload.
 
 # COMMAND ----------
 
+from tablespec.dbt import DbtRunner
+from tablespec.e2e import umfs_from_spec_dir
+from tablespec.reporting import write_report_from_spark
+
+runner = DbtRunner()
 umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
 result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
 assert result.success, f"{result.stdout}\n{result.stderr}"
 
 display(spark.sql(f"SELECT file_dt, COUNT(*) AS claim_lines FROM `{CATALOG}`.`{SCHEMA}`.`ingested_med_claims` GROUP BY file_dt ORDER BY file_dt"))
 
-gold = next(u for u in umfs if u.table_name == gold.table_name)
+gold = next(u for u in umfs if u.table_name == "member_claims_summary")
+GOLD_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`gold_{gold.table_name}`"
 paths = write_report_from_spark(spark, GOLD_TABLE, gold, f"{OUT_DIR}/reports")
 print(f"{paths.csv_path}\n{paths.xlsx_path}")
 display(spark.table(GOLD_TABLE))
