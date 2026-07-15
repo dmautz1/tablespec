@@ -38,8 +38,34 @@ os.environ["DBT_SPARK_SCHEMA"] = SCHEMA
 spark.sql(f"USE CATALOG `{CATALOG}`")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{SCHEMA}`")
 
-_nb = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+_nb = (
+    dbutils.notebook.entry_point.getDbutils()
+    .notebook()
+    .getContext()
+    .notebookPath()
+    .get()
+)
 REPO_DEMO = (Path("/Workspace") / Path(_nb).relative_to("/")).parent
+
+VALIDATION_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`validation_results`"
+VALIDATION_SCHEMA = (
+    "run_id STRING, run_timestamp TIMESTAMP, model STRING, check_id STRING, "
+    "expectation_type STRING, column_name STRING, success BOOLEAN, "
+    "severity STRING, unexpected_count BIGINT, unexpected_percent DOUBLE, "
+    "observed_value STRING, description STRING"
+)
+
+
+def log_validations(result):
+    """Append each of the run's validation outcomes to the validation log table."""
+    try:
+        report = result.validation_report()
+    except FileNotFoundError:  # dbt died before writing run results
+        return None
+    df = spark.createDataFrame(report.as_rows(), VALIDATION_SCHEMA)
+    df.write.mode("append").saveAsTable(VALIDATION_TABLE)
+    return report
+
 
 # COMMAND ----------
 
@@ -81,7 +107,10 @@ print(enrich_excel_specs(f"{OUT_DIR}/excel", model=LLM_ENDPOINT))
 from tablespec.e2e import save_specs, umfs_from_spec_dir
 from tablespec.excel_converter import ExcelToUMFConverter
 
-umfs = [ExcelToUMFConverter().convert(p)[0] for p in sorted(Path(f"{OUT_DIR}/excel").glob("*.xlsx"))]
+umfs = [
+    ExcelToUMFConverter().convert(p)[0]
+    for p in sorted(Path(f"{OUT_DIR}/excel").glob("*.xlsx"))
+]
 save_specs(umfs, f"{OUT_DIR}/umf")
 print(f"{OUT_DIR}/umf")
 
@@ -103,14 +132,18 @@ assert result.success, result.stderr
 # COMMAND ----------
 
 # MAGIC %md ## Step 6 — Validation report
-# MAGIC The build already ran the spec's validations (contracts + tests).
+# MAGIC The build already ran the spec's validations (contracts + tests). Each
+# MAGIC validation's outcome is appended to the `validation_results` log table,
+# MAGIC and the run is rendered as an HTML report.
 
 # COMMAND ----------
 
 from tablespec.validation import write_validation_report
 
-json_path, html_path = write_validation_report(result.validation_report(), f"{OUT_DIR}/reports")
+report = log_validations(result)
+json_path, html_path = write_validation_report(report, f"{OUT_DIR}/reports")
 displayHTML(html_path.read_text())
+display(spark.table(VALIDATION_TABLE))
 
 # COMMAND ----------
 
@@ -130,8 +163,9 @@ loader.save(gold, f"{OUT_DIR}/umf/{gold.table_name}")
 
 umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
 result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
+report = log_validations(result)  # failed runs are logged too
 assert result.success, f"{result.stdout}\n{result.stderr}"
-print(result.validation_report().summary())
+print(report.summary())
 
 # COMMAND ----------
 
@@ -169,8 +203,10 @@ display(spark.table(GOLD_TABLE))
 from tablespec.e2e import sync_specs_with_csvs
 
 print("added:", sync_specs_with_csvs(f"{OUT_DIR}/umf", data_dir=CSV_DIR))
-shutil.copy(REPO_DEMO / "ripple" / "telehealth_visit_count.yaml",
-            f"{OUT_DIR}/umf/member_claims_summary/columns/telehealth_visit_count.yaml")
+shutil.copy(
+    REPO_DEMO / "ripple" / "telehealth_visit_count.yaml",
+    f"{OUT_DIR}/umf/member_claims_summary/columns/telehealth_visit_count.yaml",
+)
 
 # COMMAND ----------
 
@@ -189,12 +225,35 @@ from tablespec.reporting import write_report_from_spark
 runner = DbtRunner()
 umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
 result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
+log_validations(result)  # failed runs are logged too
 assert result.success, f"{result.stdout}\n{result.stderr}"
 
-display(spark.sql(f"SELECT file_dt, COUNT(*) AS claim_lines FROM `{CATALOG}`.`{SCHEMA}`.`ingested_med_claims` GROUP BY file_dt ORDER BY file_dt"))
+display(
+    spark.sql(
+        f"SELECT file_dt, COUNT(*) AS claim_lines FROM `{CATALOG}`.`{SCHEMA}`.`ingested_med_claims` GROUP BY file_dt ORDER BY file_dt"
+    )
+)
 
 gold = next(u for u in umfs if u.table_name == "member_claims_summary")
 GOLD_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`gold_{gold.table_name}`"
 paths = write_report_from_spark(spark, GOLD_TABLE, gold, f"{OUT_DIR}/reports")
 print(f"{paths.csv_path}\n{paths.xlsx_path}")
 display(spark.table(GOLD_TABLE))
+
+# COMMAND ----------
+
+# MAGIC %md ## Appendix — Start over
+# MAGIC Drops everything the demo built: the `raw_`/`ingested_`/`gold_` tables,
+# MAGIC the `validation_results` log, and the generated outputs under `OUT_DIR`
+# MAGIC (workbooks, UMF specs, dbt project, reports). The volume and the CSVs
+# MAGIC you uploaded are untouched. Needs only Step 1; rerun from Step 2 after.
+
+# COMMAND ----------
+
+for row in spark.sql(f"SHOW TABLES IN `{CATALOG}`.`{SCHEMA}`").collect():
+    name = row.tableName
+    if name.startswith(("raw_", "ingested_", "gold_")) or name == "validation_results":
+        spark.sql(f"DROP TABLE IF EXISTS `{CATALOG}`.`{SCHEMA}`.`{name}`")
+        print("dropped", name)
+shutil.rmtree(OUT_DIR, ignore_errors=True)
+print("removed", OUT_DIR)

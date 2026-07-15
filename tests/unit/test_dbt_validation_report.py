@@ -144,6 +144,50 @@ def test_parse_run_results_missing_raises(tmp_path: Path) -> None:
         parse_dbt_run_results(tmp_path)
 
 
+def test_as_rows_flattens_per_validation(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    _write_target(
+        project,
+        results=[
+            {
+                "unique_id": "model.demo.ingested_orders",
+                "status": "success",
+                "message": "OK",
+                "relation_name": '"db"."main"."ingested_orders"',
+            },
+            {
+                "unique_id": "test.demo.unique_orders_order_id.abc123",
+                "status": "fail",
+                "message": "Got 2 results",
+                "failures": 2,
+            },
+        ],
+        nodes={
+            "test.demo.unique_orders_order_id.abc123": {
+                "column_name": "order_id",
+                "attached_node": "model.demo.ingested_orders",
+                "test_metadata": {"name": "unique"},
+            }
+        },
+    )
+    rows = dbt_validation_report(project).as_rows()
+
+    assert len(rows) == 2
+    by_check = {r["check_id"]: r for r in rows}
+    model_row = by_check["model.demo.ingested_orders"]
+    assert model_row["model"] == "ingested_orders"
+    assert model_row["success"] is True
+    test_row = by_check["test.demo.unique_orders_order_id.abc123"]
+    assert test_row["model"] == "ingested_orders"
+    assert test_row["column_name"] == "order_id"
+    assert test_row["success"] is False
+    assert test_row["unexpected_count"] == 2
+    # Rows are persistence-ready: identical scalar keys on every row.
+    assert all(set(r) == set(rows[0]) for r in rows)
+    assert all(r["run_id"] == "inv-123" for r in rows)
+    assert all(r["run_timestamp"] is not None for r in rows)
+
+
 # ---------------------------------------------------------------------------
 # HTML rendering
 # ---------------------------------------------------------------------------

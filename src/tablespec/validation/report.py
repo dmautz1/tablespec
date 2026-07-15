@@ -108,6 +108,42 @@ class ValidationReport:
             ],
         }
 
+    def as_rows(self) -> list[dict[str, Any]]:
+        """One flat dict per validation, for persistence to a results table.
+
+        Every value is a scalar (``observed_value`` is stringified), so the
+        rows feed straight into ``spark.createDataFrame`` / ``pandas.DataFrame``
+        and can be appended to a warehouse table per run. ``model`` is the
+        dbt model / table the check ran against, when recoverable.
+        """
+        run = self.quality_run
+        rows: list[dict[str, Any]] = []
+        for r in self.results:
+            # Tests carry the attached model in details; node results carry
+            # the node name as their third tag (["dbt", <resource>, <name>]).
+            model = (r.details or {}).get("model") or (
+                r.tags[2] if len(r.tags) > 2 else None
+            )
+            rows.append(
+                {
+                    "run_id": run.run_id,
+                    "run_timestamp": run.run_timestamp,
+                    "model": model,
+                    "check_id": r.check_id,
+                    "expectation_type": r.expectation_type,
+                    "column_name": r.column_name,
+                    "success": r.success,
+                    "severity": r.severity,
+                    "unexpected_count": r.unexpected_count,
+                    "unexpected_percent": r.unexpected_percent,
+                    "observed_value": (
+                        None if r.observed_value is None else str(r.observed_value)
+                    ),
+                    "description": r.description,
+                }
+            )
+        return rows
+
     def as_rich_table(self):
         """Rich-formatted table for CLI output.
 
@@ -129,8 +165,6 @@ class ValidationReport:
             details = ""
             if not r.success and r.unexpected_count and r.unexpected_count > 0:
                 details = f"{r.unexpected_count} unexpected values"
-            table.add_row(
-                status, r.expectation_type, r.column_name or "-", details
-            )
+            table.add_row(status, r.expectation_type, r.column_name or "-", details)
 
         return table
