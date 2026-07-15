@@ -109,8 +109,10 @@ def test_full_flow_with_additive_month_swap(tmp_path: Path) -> None:
     assert result.success, f"{result.stdout}\n{result.stderr}"
     assert result.validation_report().success
 
-    # --- Gold from the SHIPPED gold UMF spec (the living, hand-edited artifact). ---
-    gold = UMFLoader().load(DEMO / "sample-specs" / "member_claims_summary")
+    # --- Gold from the SHIPPED gold Excel spec workbook (the demo's start). ---
+    gold, _ = ExcelToUMFConverter().convert(
+        DEMO / "sample-specs" / "member_claims_summary.xlsx"
+    )
     UMFLoader().save(gold, specs / gold.table_name)
     umfs, result = _build(runner, project_dir, specs, data)
     assert result.success, f"{result.stdout}\n{result.stderr}"

@@ -148,18 +148,20 @@ display(spark.table(VALIDATION_TABLE))
 # COMMAND ----------
 
 # MAGIC %md ## Step 7 — Gold report table
-# MAGIC Add the gold report's UMF spec (shipped in the repo) to the spec set,
-# MAGIC then rebuild with the gold model and re-check the validations. The UMFs
-# MAGIC are the living artifact: developers and analysts adjust derivations and
-# MAGIC rules there over time.
+# MAGIC The gold report arrives as an Excel spec workbook (shipped in the repo) —
+# MAGIC the same review surface the source specs use. Convert it to a UMF spec in
+# MAGIC the spec set, then rebuild with the gold model and re-check the
+# MAGIC validations. From here on the UMF is the living artifact: developers and
+# MAGIC analysts adjust derivations and rules there over time.
 
 # COMMAND ----------
 
 from tablespec.umf_loader import UMFLoader
 
-loader = UMFLoader()
-gold = loader.load(REPO_DEMO / "sample-specs" / "member_claims_summary")
-loader.save(gold, f"{OUT_DIR}/umf/{gold.table_name}")
+gold, _ = ExcelToUMFConverter().convert(
+    REPO_DEMO / "sample-specs" / "member_claims_summary.xlsx"
+)
+UMFLoader().save(gold, f"{OUT_DIR}/umf/{gold.table_name}")
 
 umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
 result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))

@@ -94,8 +94,8 @@ Upload the month-1 sample files to the volume (`sample-data/`: `members.csv`,
 `med_claims_20260601.csv`, `rx_claims_20260601.csv` — a member roster plus
 realistic ACAS-style monthly claim extracts, 1,000/500 lines, ~176/74 columns)
 and run steps 1–8. The flow generates the Excel workbooks and UMF specs from
-your files, builds the typed tables, then adds the shipped gold UMF spec
-(`sample-specs/member_claims_summary/`) and builds the gold report table
+your files, builds the typed tables, then converts the shipped gold Excel spec
+(`sample-specs/member_claims_summary.xlsx`) and builds the gold report table
 (689 members) plus `member_claims_summary_<date>.{csv,xlsx}` (CRLF + row-count
 footer, per the spec's `metadata.output_config`).
 
