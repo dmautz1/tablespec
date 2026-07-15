@@ -231,6 +231,34 @@ class TestExpectationSuitePersistence:
         assert not (target / "validation_rules.yaml").exists()
         assert not (target / "quality_checks.yaml").exists()
 
+    def test_roundtrip_preserves_ingestion(self, tmp_path):
+        """ingestion (mode/order_by) must survive save->load in split format.
+
+        Regression: _save_split previously omitted ingestion, so a spec with
+        incremental MERGE reloaded as ingestion=None and downstream fell back
+        to a full-rebuild ``table`` materialization.
+        """
+        from tablespec.models.umf import IngestionConfig
+
+        loader = UMFLoader()
+        umf = UMF(
+            version="1.0",
+            table_name="test_table",
+            canonical_name="TestTable",
+            primary_key=["id"],
+            columns=[UMFColumn(name="id", data_type="VARCHAR")],
+            ingestion=IngestionConfig(mode="incremental", order_by=["_load_ts"]),
+        )
+
+        target = tmp_path / "out"
+        loader.save(umf, target)
+        reloaded = loader.load(target)
+
+        assert reloaded.ingestion is not None
+        assert reloaded.ingestion.mode == "incremental"
+        assert reloaded.ingestion.order_by == ["_load_ts"]
+        assert reloaded.primary_key == ["id"]
+
     def test_save_split_expectations_splits_by_column(self, tmp_path):
         """Column-specific expectations go to column files, cross-column to expectations.yaml."""
         from tablespec.models.umf import Expectation, ExpectationMeta, ExpectationSuite

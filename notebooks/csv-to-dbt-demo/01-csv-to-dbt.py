@@ -27,12 +27,8 @@ from pathlib import Path
 CATALOG, SCHEMA, VOLUME = "dev", "demo", "data"
 CSV_DIR = f"/Volumes/{CATALOG}/{SCHEMA}/{VOLUME}"
 OUT_DIR = "/Workspace/Users/david.mautz@synaptiq.ai/tablespec_out"
-PRIMARY_KEYS = {  # declared keys => incremental MERGE (new months add to the tables)
-    "members": ["member_id"],
-    "med_claims": ["ps_unique_id"],
-    "rx_claims": ["ps_unique_id"],
-}
 LLM_ENDPOINT = "databricks-claude-sonnet-4"  # serving endpoint for spec enrichment
+VALIDATION_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`validation_results`"
 
 os.environ["DBT_SPARK_SCHEMA"] = SCHEMA
 spark.sql(f"USE CATALOG `{CATALOG}`")
@@ -47,32 +43,13 @@ _nb = (
 )
 REPO_DEMO = (Path("/Workspace") / Path(_nb).relative_to("/")).parent
 
-VALIDATION_TABLE = f"`{CATALOG}`.`{SCHEMA}`.`validation_results`"
-VALIDATION_SCHEMA = (
-    "run_id STRING, run_timestamp TIMESTAMP, model STRING, check_id STRING, "
-    "expectation_type STRING, column_name STRING, success BOOLEAN, "
-    "severity STRING, unexpected_count BIGINT, unexpected_percent DOUBLE, "
-    "observed_value STRING, description STRING"
-)
 
+def generate_artifacts(umfs, out_dir):
+    """Emit SQL + Lakeflow + dbt artifacts from one spec set; return the dbt project.
 
-def log_validations(result):
-    """Append each of the run's validation outcomes to the validation log table."""
-    try:
-        report = result.validation_report()
-    except FileNotFoundError:  # dbt died before writing run results
-        return None
-    df = spark.createDataFrame(report.as_rows(), VALIDATION_SCHEMA)
-    df.write.mode("append").saveAsTable(VALIDATION_TABLE)
-    return report
-
-
-def emit_all(umfs, out_dir):
-    """Emit dbt + SQL + Lakeflow artifacts from one spec set, returning the dbt dir.
-
-    The same UMFs drive three targets side by side: the dbt project (built
-    below), plain SQL (per-table DDL + a plan.sql per derived/gold table), and a
-    Lakeflow Declarative Pipelines project.
+    The same UMFs drive three targets side by side: plain SQL (per-table DDL +
+    a plan.sql per derived/gold table), a Lakeflow Declarative Pipelines
+    project, and the dbt project returned here for the build cell that follows.
     """
     from tablespec.dbt import DbtRunner
     from tablespec.ldp import generate_ldp_project
@@ -98,13 +75,23 @@ def emit_all(umfs, out_dir):
 # COMMAND ----------
 
 # MAGIC %md ## Step 2 — Generate Excel spec workbooks from the volume's CSVs
-# MAGIC Monthly files are grouped into one table per feed, types are inferred
-# MAGIC from the data, and the declared primary keys set incremental MERGE.
+# MAGIC Monthly files are grouped into one table per feed and types are inferred
+# MAGIC from the data. The primary keys declared here set incremental MERGE; they
+# MAGIC are written into the spec and carried forward automatically — every later
+# MAGIC step reads keys and ingestion mode from the spec, not from this cell.
 
 # COMMAND ----------
 
 from tablespec.e2e import umfs_from_csvs
 from tablespec.excel_converter import UMFToExcelConverter
+
+# Named once, at generation. The claim feeds carry many *_id / *_nbr columns, so
+# the real key can't be guessed by name — declare it explicitly here.
+PRIMARY_KEYS = {
+    "members": ["member_id"],
+    "med_claims": ["ps_unique_id"],
+    "rx_claims": ["ps_unique_id"],
+}
 
 Path(f"{OUT_DIR}/excel").mkdir(parents=True, exist_ok=True)
 for u in umfs_from_csvs(CSV_DIR, infer_types=True, primary_keys=PRIMARY_KEYS):
@@ -144,33 +131,38 @@ print(f"{OUT_DIR}/umf")
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 5 — Emit artifacts and build with dbt
-# MAGIC The one spec set drives three targets side by side — dbt, plain SQL
-# MAGIC (DDL + gold plan), and a Lakeflow Declarative Pipelines project. The dbt
-# MAGIC project is the one we build here: its raw models read the volume files
-# MAGIC directly and the typed models MERGE the batch into `<catalog>.<schema>`.
+# MAGIC %md ## Step 5 — Generate the SQL, Lakeflow, and dbt artifacts
+# MAGIC The one spec set drives three targets side by side — plain SQL (DDL +
+# MAGIC gold plan), a Lakeflow Declarative Pipelines project, and the dbt project
+# MAGIC built in the next cell. Keys and ingestion mode come from the spec.
 
 # COMMAND ----------
 
 from tablespec.dbt import DbtRunner
+from tablespec.e2e import umfs_from_spec_dir
 
 runner = DbtRunner()
-result = runner.build(emit_all(umfs, OUT_DIR))
+umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
+project = generate_artifacts(umfs, OUT_DIR)
+
+# COMMAND ----------
+
+# MAGIC %md ## Step 6 — Build with dbt and log the validations
+# MAGIC The dbt raw models read the volume files directly; the typed models MERGE
+# MAGIC the batch into `<catalog>.<schema>`. `dbt build` runs the spec's
+# MAGIC validations (contracts + tests); each outcome is appended to the
+# MAGIC `validation_results` table (created if missing), then rendered as HTML.
+
+# COMMAND ----------
+
+from tablespec.validation import write_validation_report, write_validation_results
+
+result = runner.build(project)
 print(result.stdout)
-assert result.success, result.stderr
+assert result.success, f"{result.stdout}\n{result.stderr}"
 
-# COMMAND ----------
-
-# MAGIC %md ## Step 6 — Validation report
-# MAGIC The build already ran the spec's validations (contracts + tests). Each
-# MAGIC validation's outcome is appended to the `validation_results` log table,
-# MAGIC and the run is rendered as an HTML report.
-
-# COMMAND ----------
-
-from tablespec.validation import write_validation_report
-
-report = log_validations(result)
+report = result.validation_report()
+write_validation_results(report, VALIDATION_TABLE)
 json_path, html_path = write_validation_report(report, f"{OUT_DIR}/reports")
 displayHTML(html_path.read_text())
 display(spark.table(VALIDATION_TABLE))
@@ -194,8 +186,13 @@ gold, _ = ExcelToUMFConverter().convert(
 UMFLoader().save(gold, f"{OUT_DIR}/umf/{gold.table_name}")
 
 umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
-result = runner.build(emit_all(umfs, OUT_DIR))
-report = log_validations(result)  # failed runs are logged too
+project = generate_artifacts(umfs, OUT_DIR)
+
+# COMMAND ----------
+
+result = runner.build(project)
+report = result.validation_report()
+write_validation_results(report, VALIDATION_TABLE)  # failed runs are logged too
 assert result.success, f"{result.stdout}\n{result.stderr}"
 print(report.summary())
 
@@ -253,11 +250,16 @@ shutil.copy(
 from tablespec.dbt import DbtRunner
 from tablespec.e2e import umfs_from_spec_dir
 from tablespec.reporting import write_report_from_spark
+from tablespec.validation import write_validation_results
 
 runner = DbtRunner()
 umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
-result = runner.build(emit_all(umfs, OUT_DIR))
-log_validations(result)  # failed runs are logged too
+project = generate_artifacts(umfs, OUT_DIR)
+
+# COMMAND ----------
+
+result = runner.build(project)
+write_validation_results(result.validation_report(), VALIDATION_TABLE)
 assert result.success, f"{result.stdout}\n{result.stderr}"
 
 display(

@@ -188,6 +188,20 @@ def test_as_rows_flattens_per_validation(tmp_path: Path) -> None:
     assert all(r["run_timestamp"] is not None for r in rows)
 
 
+def test_validation_result_schema_matches_as_rows(tmp_path: Path) -> None:
+    """The Delta schema's fields must line up with as_rows()' keys, in order."""
+    delta_writer = pytest.importorskip("tablespec.validation.delta_writer")
+
+    project = tmp_path / "proj"
+    _write_target(
+        project,
+        results=[{"unique_id": "model.demo.t", "status": "success", "message": "OK"}],
+    )
+    row = dbt_validation_report(project).as_rows()[0]
+    schema_fields = [f.name for f in delta_writer.VALIDATION_RESULT_SCHEMA.fields]
+    assert schema_fields == list(row)
+
+
 # ---------------------------------------------------------------------------
 # HTML rendering
 # ---------------------------------------------------------------------------

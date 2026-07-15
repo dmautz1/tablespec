@@ -24,6 +24,7 @@ __all__ = [
     "parse_dbt_run_results",
     "render_validation_report_html",
     "write_validation_report",
+    "write_validation_results",
 ]
 
 # TableValidator and GXTableValidator require pyspark - only available with tablespec[spark]
@@ -41,7 +42,11 @@ except (ImportError, ValueError):
     pass
 
 try:
-    from .delta_writer import VALIDATION_RESULT_SCHEMA, ValidationDeltaWriter
+    from .delta_writer import (
+        VALIDATION_RESULT_SCHEMA,
+        ValidationDeltaWriter,
+        write_validation_results,
+    )
 except (ImportError, ValueError):
     pass
 

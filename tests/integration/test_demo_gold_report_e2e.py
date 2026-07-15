@@ -105,9 +105,16 @@ def test_full_flow_with_additive_month_swap(tmp_path: Path) -> None:
     project_dir = tmp_path / "dbt"  # ONE project = one warehouse across runs
 
     # --- Sources build + validation report. ---
-    _, result = _build(runner, project_dir, specs, data)
+    source_umfs, result = _build(runner, project_dir, specs, data)
     assert result.success, f"{result.stdout}\n{result.stderr}"
     assert result.validation_report().success
+    # Incremental MERGE must survive the YAML round-trip: this is what makes the
+    # month swap below ADD rather than REPLACE. Asserted on the RELOADED spec
+    # (umfs_from_spec_dir), not the pre-save converted UMF -- the pre-save-only
+    # check missed that _save_split was dropping ingestion.
+    med_reloaded = next(u for u in source_umfs if u.table_name == "med_claims")
+    assert med_reloaded.ingestion is not None
+    assert med_reloaded.ingestion.mode == "incremental"
 
     # --- Gold from the SHIPPED gold Excel spec workbook (the demo's start). ---
     gold, _ = ExcelToUMFConverter().convert(

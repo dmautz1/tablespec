@@ -685,6 +685,16 @@ class UMFLoader:
                 else source
             )
 
+        # Add ingestion if present (mode/order_by drive incremental MERGE vs
+        # snapshot rebuild downstream; must survive the YAML round-trip).
+        ingestion = getattr(umf, "ingestion", None)
+        if ingestion is not None:
+            table_data["ingestion"] = (
+                ingestion.model_dump(exclude_none=True)
+                if hasattr(ingestion, "model_dump")
+                else ingestion
+            )
+
         # Add relationships (now embedded in table.yaml, not separate file)
         if umf.relationships:
             relationships_data = {}
