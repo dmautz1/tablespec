@@ -67,6 +67,34 @@ def log_validations(result):
     return report
 
 
+def emit_all(umfs, out_dir):
+    """Emit dbt + SQL + Lakeflow artifacts from one spec set, returning the dbt dir.
+
+    The same UMFs drive three targets side by side: the dbt project (built
+    below), plain SQL (per-table DDL + a plan.sql per derived/gold table), and a
+    Lakeflow Declarative Pipelines project.
+    """
+    from tablespec.dbt import DbtRunner
+    from tablespec.ldp import generate_ldp_project
+    from tablespec.schemas import generate_sql_ddl, generate_sql_plan
+
+    sql_dir = Path(f"{out_dir}/sql")
+    sql_dir.mkdir(parents=True, exist_ok=True)
+    by_name = {u.table_name: u for u in umfs}
+    for u in umfs:
+        (sql_dir / f"{u.table_name}.ddl.sql").write_text(
+            generate_sql_ddl(u.model_dump(exclude_none=True))
+        )
+        if any(c.derivation for c in u.columns):  # derived/gold target -> plan
+            related = {n: m for n, m in by_name.items() if n != u.table_name}
+            (sql_dir / f"{u.table_name}.plan.sql").write_text(
+                generate_sql_plan(u, related)
+            )
+    generate_ldp_project(list(umfs), dialect="databricks", out_dir=f"{out_dir}/ldp")
+    print(f"sql -> {sql_dir}\nlakeflow -> {out_dir}/ldp")
+    return DbtRunner().emit(umfs, f"{out_dir}/dbt")
+
+
 # COMMAND ----------
 
 # MAGIC %md ## Step 2 — Generate Excel spec workbooks from the volume's CSVs
@@ -116,16 +144,18 @@ print(f"{OUT_DIR}/umf")
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 5 — Build with dbt
-# MAGIC The emitted raw models read the volume files directly; the typed models
-# MAGIC MERGE the batch into `<catalog>.<schema>`.
+# MAGIC %md ## Step 5 — Emit artifacts and build with dbt
+# MAGIC The one spec set drives three targets side by side — dbt, plain SQL
+# MAGIC (DDL + gold plan), and a Lakeflow Declarative Pipelines project. The dbt
+# MAGIC project is the one we build here: its raw models read the volume files
+# MAGIC directly and the typed models MERGE the batch into `<catalog>.<schema>`.
 
 # COMMAND ----------
 
 from tablespec.dbt import DbtRunner
 
 runner = DbtRunner()
-result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
+result = runner.build(emit_all(umfs, OUT_DIR))
 print(result.stdout)
 assert result.success, result.stderr
 
@@ -164,7 +194,7 @@ gold, _ = ExcelToUMFConverter().convert(
 UMFLoader().save(gold, f"{OUT_DIR}/umf/{gold.table_name}")
 
 umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
-result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
+result = runner.build(emit_all(umfs, OUT_DIR))
 report = log_validations(result)  # failed runs are logged too
 assert result.success, f"{result.stdout}\n{result.stderr}"
 print(report.summary())
@@ -226,7 +256,7 @@ from tablespec.reporting import write_report_from_spark
 
 runner = DbtRunner()
 umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
-result = runner.build(runner.emit(umfs, f"{OUT_DIR}/dbt"))
+result = runner.build(emit_all(umfs, OUT_DIR))
 log_validations(result)  # failed runs are logged too
 assert result.success, f"{result.stdout}\n{result.stderr}"
 
@@ -247,8 +277,9 @@ display(spark.table(GOLD_TABLE))
 # MAGIC %md ## Appendix — Start over
 # MAGIC Drops everything the demo built: the `raw_`/`ingested_`/`gold_` tables,
 # MAGIC the `validation_results` log, and the generated outputs under `OUT_DIR`
-# MAGIC (workbooks, UMF specs, dbt project, reports). The volume and the CSVs
-# MAGIC you uploaded are untouched. Needs only Step 1; rerun from Step 2 after.
+# MAGIC (workbooks, UMF specs, dbt/sql/lakeflow artifacts, reports). The volume
+# MAGIC and the CSVs you uploaded are untouched. Needs only Step 1; rerun from
+# MAGIC Step 2 after.
 
 # COMMAND ----------
 
