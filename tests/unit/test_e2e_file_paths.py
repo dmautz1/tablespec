@@ -181,9 +181,36 @@ def test_umfs_from_csvs_infer_types(tmp_path: Path) -> None:
     assert cols["svc_dt"].data_type == "DATE" and cols["svc_dt"].format == "YYYYMMDD"
     assert cols["iso_dt"].data_type == "DATE" and cols["iso_dt"].format == "YYYY-MM-DD"
     assert cols["amount"].data_type == "DECIMAL" and cols["amount"].scale == 2
+    # precision covers the widest integer part (3 for 120) plus scale (2).
+    assert cols["amount"].precision == 5
     assert cols["units"].data_type == "INTEGER"
-    # All-empty columns stay VARCHAR.
+    # VARCHAR columns are sized from their widest sampled value (with headroom).
+    assert cols["claim_id"].data_type == "VARCHAR" and cols["claim_id"].length == 8
+    assert cols["member_cd"].length == 8
+    # DATE / DECIMAL / INTEGER carry no VARCHAR length.
+    assert cols["svc_dt"].length is None
+    assert cols["amount"].length is None
+    # All-empty columns stay VARCHAR with no inferred length.
     assert cols["blank"].data_type == "VARCHAR"
+    assert cols["blank"].length is None
+
+
+def test_umfs_from_csvs_infers_sizes(tmp_path: Path) -> None:
+    """DECIMAL precision/scale and VARCHAR length reflect the widest content."""
+    (tmp_path / "sizes.csv").write_text(
+        "big_amt,small_amt,name\n"
+        "123456.789,1.5,ab\n"
+        "9.9,2.25,abcdefghij\n"  # name widest = 10 chars
+    )
+    (umf,) = umfs_from_csvs(tmp_path, infer_types=True)
+    cols = {c.name: c for c in umf.columns}
+    # big_amt: int part up to 6 digits, frac up to 3 -> DECIMAL(9, 3).
+    assert cols["big_amt"].data_type == "DECIMAL"
+    assert (cols["big_amt"].precision, cols["big_amt"].scale) == (9, 3)
+    # small_amt: int part 1 digit, frac up to 2 -> DECIMAL(3, 2).
+    assert (cols["small_amt"].precision, cols["small_amt"].scale) == (3, 2)
+    # name: widest 10 chars -> padded (+30%) and rounded up to 16.
+    assert cols["name"].data_type == "VARCHAR" and cols["name"].length == 16
 
 
 def test_umfs_from_csvs_primary_keys_switch_to_incremental(tmp_path: Path) -> None:

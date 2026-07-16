@@ -197,6 +197,45 @@ _INTEGER = re.compile(r"^-?\d{1,9}$")
 
 _INFER_SAMPLE_ROWS = 200
 
+#: Cap for a DECIMAL's total digit count (Spark/most warehouses top out at 38).
+_MAX_DECIMAL_PRECISION = 38
+#: Cap for an inferred DECIMAL's fractional digits.
+_MAX_DECIMAL_SCALE = 6
+
+
+def _sized_varchar_length(max_observed: int) -> int:
+    """A VARCHAR length with headroom above the widest sampled value.
+
+    Sampling sees only :data:`_INFER_SAMPLE_ROWS` rows, so a later value can be
+    longer than anything observed. Pad by ~30% and round up to a friendly bound
+    so the declared length is stable and unlikely to overflow, while still
+    reflecting the data's real shape (a 3-char code does not become VARCHAR(255)).
+    """
+    padded = max(1, max_observed) * 13 // 10  # +30% headroom
+    for bound in (8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096):
+        if padded <= bound:
+            return bound
+    return padded
+
+
+def _decimal_precision_scale(values: list[str]) -> tuple[int, int]:
+    """(precision, scale) for a column of decimal strings, from actual widths.
+
+    ``scale`` is the widest fractional part (capped at
+    :data:`_MAX_DECIMAL_SCALE`); ``precision`` is the widest integer part plus
+    ``scale`` (so it always covers the observed magnitude), clamped to
+    :data:`_MAX_DECIMAL_PRECISION` and never less than ``scale``.
+    """
+    max_int_digits = 0
+    max_frac_digits = 0
+    for v in values:
+        int_part, _, frac_part = v.lstrip("-").partition(".")
+        max_int_digits = max(max_int_digits, len(int_part.lstrip("0")) or 1)
+        max_frac_digits = max(max_frac_digits, len(frac_part))
+    scale = min(_MAX_DECIMAL_SCALE, max_frac_digits)
+    precision = min(_MAX_DECIMAL_PRECISION, max(scale + 1, max_int_digits + scale))
+    return precision, scale
+
 
 def _infer_column_types(
     path: Path,
@@ -206,11 +245,14 @@ def _infer_column_types(
     quote_char: str | None,
     encoding: str,
 ) -> dict[str, dict[str, Any]]:
-    """Infer DATE/DECIMAL/INTEGER type updates by sampling data rows.
+    """Infer type + size updates (length/precision/scale) by sampling data rows.
 
     Conservative: a type is assigned only when EVERY sampled non-empty value
     matches, integers with leading zeros stay VARCHAR (codes like ``007``),
-    and all-empty columns stay VARCHAR. Returns ``{header: type update}``.
+    and all-empty columns stay VARCHAR. Sizes come from the sampled content:
+    DECIMAL precision/scale from the widest integer/fractional parts, and a
+    VARCHAR that stays VARCHAR gets a ``length`` sized to its widest value (with
+    headroom). Returns ``{header: type update}``.
     """
     import csv
 
@@ -235,14 +277,23 @@ def _infer_column_types(
         elif all(_ISO_DATE.match(v) for v in values):
             updates[header] = {"data_type": "DATE", "format": "YYYY-MM-DD"}
         elif all(_DECIMAL.match(v) for v in values):
-            scale = min(6, max(len(v.split(".")[1]) for v in values))
-            updates[header] = {"data_type": "DECIMAL", "precision": 18, "scale": scale}
+            precision, scale = _decimal_precision_scale(values)
+            updates[header] = {
+                "data_type": "DECIMAL",
+                "precision": precision,
+                "scale": scale,
+            }
         elif all(
             _INTEGER.match(v)
             and not (len(v.lstrip("-")) > 1 and v.lstrip("-")[0] == "0")
             for v in values
         ):
             updates[header] = {"data_type": "INTEGER"}
+        else:
+            # Stays VARCHAR: size it to the widest sampled value (with headroom).
+            updates[header] = {
+                "length": _sized_varchar_length(max(len(v) for v in values))
+            }
     return updates
 
 
@@ -291,8 +342,11 @@ def umfs_from_csvs(
             declaration (and used for the header parse).
         infer_types: sample up to 200 data rows and assign DATE (``YYYYMMDD``
             or ISO), DECIMAL, or INTEGER when every sampled value matches
-            (leading-zero codes stay VARCHAR). Default off: the all-VARCHAR
-            starter spec the engineer enriches.
+            (leading-zero codes stay VARCHAR). Sizes are inferred from the
+            sampled content too: DECIMAL ``precision``/``scale`` from the widest
+            integer/fractional parts, and a column that stays VARCHAR gets a
+            ``length`` sized to its widest value (padded with headroom). Default
+            off: the all-VARCHAR starter spec the engineer enriches.
         group_dated: group date-suffixed files into monthly-family tables.
         primary_keys: ``{table_name: [key columns]}`` -- declares the key
             (columns become non-nullable) and switches the table to
