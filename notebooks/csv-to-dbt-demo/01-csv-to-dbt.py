@@ -121,19 +121,26 @@ project = emit_artifacts(umfs, OUT_DIR)
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 6 — Build with dbt and log the validations
+# MAGIC %md ## Step 6 — Build with dbt
 # MAGIC The dbt raw models read the volume files directly; the typed models MERGE
-# MAGIC the batch into `<catalog>.<schema>`. `dbt build` runs the spec's
-# MAGIC validations (contracts + tests); each outcome is appended to the
-# MAGIC `validation_results` table (created if missing), then rendered as HTML.
+# MAGIC the batch into `<catalog>.<schema>`. `dbt build` also runs the spec's
+# MAGIC validations (contracts + tests) as part of the build.
 
 # COMMAND ----------
-
-from tablespec.validation import write_validation_report, write_validation_results
 
 result = runner.build(project)
 print(result.stdout)
 assert result.success, f"{result.stdout}\n{result.stderr}"
+
+# COMMAND ----------
+
+# MAGIC %md ## Step 7 — Log and view the validation results
+# MAGIC Each validation outcome from the build is appended to the
+# MAGIC `validation_results` table (created if missing) and rendered as HTML.
+
+# COMMAND ----------
+
+from tablespec.validation import write_validation_report, write_validation_results
 
 report = result.validation_report()
 write_validation_results(report, VALIDATION_TABLE)
@@ -143,7 +150,7 @@ display(spark.table(VALIDATION_TABLE))
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 7 — Gold report table
+# MAGIC %md ## Step 8 — Gold report table
 # MAGIC The gold report arrives as an Excel spec workbook (shipped in the repo) —
 # MAGIC the same review surface the source specs use. Convert it to a UMF spec in
 # MAGIC the spec set, then rebuild with the gold model and re-check the
@@ -173,7 +180,7 @@ print(report.summary())
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 8 — Report files
+# MAGIC %md ## Step 9 — Report files
 # MAGIC The gold spec's `metadata.output_config` drives a CSV (row-count footer,
 # MAGIC CRLF) + Excel export of the gold table.
 
@@ -188,7 +195,7 @@ display(spark.table(GOLD_TABLE))
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 9 — Month 2 arrives (manual)
+# MAGIC %md ## Step 10 — Month 2 arrives (manual)
 # MAGIC In the volume: **remove** `med_claims_20260601.csv` and
 # MAGIC `rx_claims_20260601.csv`, **upload** `med_claims_20260701.csv` and
 # MAGIC `rx_claims_20260701.csv`. The new med file carries a NEW column
@@ -197,7 +204,7 @@ display(spark.table(GOLD_TABLE))
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 10 — Sync the specs with the new files
+# MAGIC %md ## Step 11 — Sync the specs with the new files
 # MAGIC New columns found in the current files are appended to the specs (typed
 # MAGIC by sampling); the authored gold column for the new field comes from the
 # MAGIC repo's ripple file.
@@ -215,7 +222,7 @@ umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)  # refreshed in pl
 
 # COMMAND ----------
 
-# MAGIC %md ## Step 11 — Rebuild: the new month ADDS to the tables
+# MAGIC %md ## Step 12 — Rebuild: the new month ADDS to the tables
 # MAGIC The MERGE keeps month-1 rows even though their files are gone, appends
 # MAGIC the new column in place, and the gold report regenerates over both months.
 # MAGIC Self-contained (needs only Step 1's setup), so a restarted cluster can
