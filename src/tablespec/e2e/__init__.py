@@ -14,13 +14,17 @@ Layers:
 
 from __future__ import annotations
 
+from tablespec.e2e.artifacts import emit_artifacts
 from tablespec.e2e.backbone import BackboneResult, run_backbone
 from tablespec.e2e.compile import compile_umfs
 from tablespec.e2e.manifest import CompiledArtifacts, TableArtifacts
 from tablespec.e2e.paths import (
+    excel_specs_from_csvs,
     save_specs,
+    specs_from_excel_dir,
     sync_specs_with_csvs,
     umfs_from_csvs,
+    umfs_from_excel_dir,
     umfs_from_spec_dir,
     umfs_from_specs,
     umfs_from_tables,
@@ -31,10 +35,14 @@ __all__ = [
     "CompiledArtifacts",
     "TableArtifacts",
     "compile_umfs",
+    "emit_artifacts",
+    "excel_specs_from_csvs",
     "run_backbone",
     "save_specs",
+    "specs_from_excel_dir",
     "sync_specs_with_csvs",
     "umfs_from_csvs",
+    "umfs_from_excel_dir",
     "umfs_from_spec_dir",
     "umfs_from_specs",
     "umfs_from_tables",

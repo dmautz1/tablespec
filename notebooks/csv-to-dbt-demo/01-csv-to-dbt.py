@@ -43,35 +43,6 @@ _nb = (
 )
 REPO_DEMO = (Path("/Workspace") / Path(_nb).relative_to("/")).parent
 
-
-def generate_artifacts(umfs, out_dir):
-    """Emit SQL + Lakeflow + dbt artifacts from one spec set; return the dbt project.
-
-    The same UMFs drive three targets side by side: plain SQL (per-table DDL +
-    a plan.sql per derived/gold table), a Lakeflow Declarative Pipelines
-    project, and the dbt project returned here for the build cell that follows.
-    """
-    from tablespec.dbt import DbtRunner
-    from tablespec.ldp import generate_ldp_project
-    from tablespec.schemas import generate_sql_ddl, generate_sql_plan
-
-    sql_dir = Path(f"{out_dir}/sql")
-    sql_dir.mkdir(parents=True, exist_ok=True)
-    by_name = {u.table_name: u for u in umfs}
-    for u in umfs:
-        (sql_dir / f"{u.table_name}.ddl.sql").write_text(
-            generate_sql_ddl(u.model_dump(exclude_none=True))
-        )
-        if any(c.derivation for c in u.columns):  # derived/gold target -> plan
-            related = {n: m for n, m in by_name.items() if n != u.table_name}
-            (sql_dir / f"{u.table_name}.plan.sql").write_text(
-                generate_sql_plan(u, related)
-            )
-    generate_ldp_project(list(umfs), dialect="databricks", out_dir=f"{out_dir}/ldp")
-    print(f"sql -> {sql_dir}\nlakeflow -> {out_dir}/ldp")
-    return DbtRunner().emit(umfs, f"{out_dir}/dbt")
-
-
 # COMMAND ----------
 
 # MAGIC %md ## Step 2 — Generate Excel spec workbooks from the volume's CSVs
@@ -82,21 +53,18 @@ def generate_artifacts(umfs, out_dir):
 
 # COMMAND ----------
 
-from tablespec.e2e import umfs_from_csvs
-from tablespec.excel_converter import UMFToExcelConverter
+from tablespec.e2e import excel_specs_from_csvs
 
 # Named once, at generation. The claim feeds carry many *_id / *_nbr columns, so
-# the real key can't be guessed by name — declare it explicitly here.
+# the real key can't be guessed by name — declare it explicitly here. The keys
+# are written into the spec and carried forward; no later step re-declares them.
 PRIMARY_KEYS = {
     "members": ["member_id"],
     "med_claims": ["ps_unique_id"],
     "rx_claims": ["ps_unique_id"],
 }
 
-Path(f"{OUT_DIR}/excel").mkdir(parents=True, exist_ok=True)
-for u in umfs_from_csvs(CSV_DIR, infer_types=True, primary_keys=PRIMARY_KEYS):
-    UMFToExcelConverter().convert(u).save(f"{OUT_DIR}/excel/{u.table_name}.xlsx")
-    print(f"{OUT_DIR}/excel/{u.table_name}.xlsx")
+print(excel_specs_from_csvs(CSV_DIR, f"{OUT_DIR}/excel", primary_keys=PRIMARY_KEYS))
 
 # COMMAND ----------
 
@@ -119,15 +87,22 @@ print(enrich_excel_specs(f"{OUT_DIR}/excel", model=LLM_ENDPOINT))
 
 # COMMAND ----------
 
-from tablespec.e2e import save_specs, umfs_from_spec_dir
-from tablespec.excel_converter import ExcelToUMFConverter
+from tablespec.e2e import specs_from_excel_dir
 
-umfs = [
-    ExcelToUMFConverter().convert(p)[0]
-    for p in sorted(Path(f"{OUT_DIR}/excel").glob("*.xlsx"))
-]
-save_specs(umfs, f"{OUT_DIR}/umf")
-print(f"{OUT_DIR}/umf")
+print(specs_from_excel_dir(f"{OUT_DIR}/excel", f"{OUT_DIR}/umf"))
+
+# COMMAND ----------
+
+# MAGIC %md ## The spec set
+# MAGIC `umfs` is the working list of specs the rest of the notebook builds from.
+# MAGIC It is refreshed in place whenever the specs change (Step 7 adds the gold
+# MAGIC spec, Step 10 syncs a new column), so build cells never reload it.
+
+# COMMAND ----------
+
+from tablespec.e2e import umfs_from_spec_dir
+
+umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
 
 # COMMAND ----------
 
@@ -139,11 +114,10 @@ print(f"{OUT_DIR}/umf")
 # COMMAND ----------
 
 from tablespec.dbt import DbtRunner
-from tablespec.e2e import umfs_from_spec_dir
+from tablespec.e2e import emit_artifacts
 
 runner = DbtRunner()
-umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
-project = generate_artifacts(umfs, OUT_DIR)
+project = emit_artifacts(umfs, OUT_DIR)
 
 # COMMAND ----------
 
@@ -178,6 +152,7 @@ display(spark.table(VALIDATION_TABLE))
 
 # COMMAND ----------
 
+from tablespec.excel_converter import ExcelToUMFConverter
 from tablespec.umf_loader import UMFLoader
 
 gold, _ = ExcelToUMFConverter().convert(
@@ -185,8 +160,8 @@ gold, _ = ExcelToUMFConverter().convert(
 )
 UMFLoader().save(gold, f"{OUT_DIR}/umf/{gold.table_name}")
 
-umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
-project = generate_artifacts(umfs, OUT_DIR)
+umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)  # refreshed in place
+project = emit_artifacts(umfs, OUT_DIR)
 
 # COMMAND ----------
 
@@ -229,13 +204,14 @@ display(spark.table(GOLD_TABLE))
 
 # COMMAND ----------
 
-from tablespec.e2e import sync_specs_with_csvs
+from tablespec.e2e import sync_specs_with_csvs, umfs_from_spec_dir
 
 print("added:", sync_specs_with_csvs(f"{OUT_DIR}/umf", data_dir=CSV_DIR))
 shutil.copy(
     REPO_DEMO / "ripple" / "telehealth_visit_count.yaml",
     f"{OUT_DIR}/umf/member_claims_summary/columns/telehealth_visit_count.yaml",
 )
+umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)  # refreshed in place
 
 # COMMAND ----------
 
@@ -248,13 +224,13 @@ shutil.copy(
 # COMMAND ----------
 
 from tablespec.dbt import DbtRunner
-from tablespec.e2e import umfs_from_spec_dir
+from tablespec.e2e import emit_artifacts, umfs_from_spec_dir
 from tablespec.reporting import write_report_from_spark
 from tablespec.validation import write_validation_results
 
 runner = DbtRunner()
-umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)
-project = generate_artifacts(umfs, OUT_DIR)
+umfs = umfs_from_spec_dir(f"{OUT_DIR}/umf", data_dir=CSV_DIR)  # standalone resume
+project = emit_artifacts(umfs, OUT_DIR)
 
 # COMMAND ----------
 

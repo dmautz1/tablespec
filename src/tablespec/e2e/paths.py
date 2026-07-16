@@ -636,6 +636,70 @@ def save_specs(umfs: list[UMF], out_dir: str | Path, *, validate: bool = True) -
     return out
 
 
+def excel_specs_from_csvs(
+    csv_dir: str | Path | Sequence[str | Path],
+    excel_dir: str | Path,
+    *,
+    primary_keys: dict[str, list[str]] | None = None,
+    infer_types: bool = True,
+    group_dated: bool = True,
+    delimiter: str | None = None,
+    quote_char: str | None = '"',
+    encoding: str = "UTF-8",
+) -> list[Path]:
+    """Generate one Excel spec workbook per feed from delimited files.
+
+    :func:`umfs_from_csvs` then :class:`UMFToExcelConverter` per table, written
+    as ``<excel_dir>/<table_name>.xlsx`` (``excel_dir`` is created). Workbook
+    names use ``table_name``, which the UMF model constrains to
+    ``^[A-Za-z][A-Za-z0-9_]*$`` -- always a safe, collision-free filename.
+
+    Args mirror :func:`umfs_from_csvs`; ``delimiter=None`` sniffs pipe vs comma
+    per file. Returns the written workbook paths (sorted by table name).
+    """
+    from tablespec.excel_converter import UMFToExcelConverter
+
+    umfs = umfs_from_csvs(
+        csv_dir,
+        delimiter=delimiter,
+        quote_char=quote_char,
+        encoding=encoding,
+        infer_types=infer_types,
+        group_dated=group_dated,
+        primary_keys=primary_keys,
+    )
+    out = Path(excel_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    converter = UMFToExcelConverter()
+    paths: list[Path] = []
+    for umf in umfs:
+        path = out / f"{umf.table_name}.xlsx"
+        converter.convert(umf).save(str(path))
+        paths.append(path)
+    return paths
+
+
+def umfs_from_excel_dir(excel_dir: str | Path) -> list[UMF]:
+    """Load a UMF per ``*.xlsx`` spec workbook in *excel_dir* (sorted by name)."""
+    from tablespec.excel_converter import ExcelToUMFConverter
+
+    converter = ExcelToUMFConverter()
+    return [
+        converter.convert(path)[0] for path in sorted(Path(excel_dir).glob("*.xlsx"))
+    ]
+
+
+def specs_from_excel_dir(excel_dir: str | Path, out_dir: str | Path) -> Path:
+    """Convert every workbook in *excel_dir* to split-format YAML specs.
+
+    :func:`umfs_from_excel_dir` then :func:`save_specs`. DESTRUCTIVE: ``save_specs``
+    CLEARS *out_dir* first, so this is a first-write operation -- run it once,
+    before any per-spec additions land in *out_dir* (e.g. a gold spec saved there
+    later via ``UMFLoader``). Returns *out_dir*.
+    """
+    return save_specs(umfs_from_excel_dir(excel_dir), out_dir)
+
+
 def _to_strict_umf_data(base: dict[str, Any]) -> dict[str, Any]:
     """Normalize ``SparkToUmfMapper`` output into the strict UMF model shape.
 
