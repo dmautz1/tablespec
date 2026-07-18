@@ -222,9 +222,14 @@ def _decimal_precision_scale(values: list[str]) -> tuple[int, int]:
     """(precision, scale) for a column of decimal strings, from actual widths.
 
     ``scale`` is the widest fractional part (capped at
-    :data:`_MAX_DECIMAL_SCALE`); ``precision`` is the widest integer part plus
-    ``scale`` (so it always covers the observed magnitude), clamped to
-    :data:`_MAX_DECIMAL_PRECISION` and never less than ``scale``.
+    :data:`_MAX_DECIMAL_SCALE`); underestimating scale only rounds on cast, so
+    it carries no headroom. The integer side is different: sampling sees only
+    :data:`_INFER_SAMPLE_ROWS` rows (and one file per monthly family), and a
+    later value with one more integer digit makes the cast ERROR
+    (``NUMERIC_VALUE_OUT_OF_RANGE``), so the observed integer-digit count is
+    rounded up to a friendly bound (4, then 9/18/28 -- int32/int64-ish digit
+    capacities) before ``precision = int_digits + scale`` is computed, clamped
+    to :data:`_MAX_DECIMAL_PRECISION`.
     """
     max_int_digits = 0
     max_frac_digits = 0
@@ -233,7 +238,11 @@ def _decimal_precision_scale(values: list[str]) -> tuple[int, int]:
         max_int_digits = max(max_int_digits, len(int_part.lstrip("0")) or 1)
         max_frac_digits = max(max_frac_digits, len(frac_part))
     scale = min(_MAX_DECIMAL_SCALE, max_frac_digits)
-    precision = min(_MAX_DECIMAL_PRECISION, max(scale + 1, max_int_digits + scale))
+    int_digits = next(
+        (bound for bound in (4, 9, 18, 28) if max_int_digits <= bound),
+        max_int_digits,
+    )
+    precision = min(_MAX_DECIMAL_PRECISION, int_digits + scale)
     return precision, scale
 
 
@@ -250,9 +259,10 @@ def _infer_column_types(
     Conservative: a type is assigned only when EVERY sampled non-empty value
     matches, integers with leading zeros stay VARCHAR (codes like ``007``),
     and all-empty columns stay VARCHAR. Sizes come from the sampled content:
-    DECIMAL precision/scale from the widest integer/fractional parts, and a
-    VARCHAR that stays VARCHAR gets a ``length`` sized to its widest value (with
-    headroom). Returns ``{header: type update}``.
+    DECIMAL precision/scale from the widest integer/fractional parts (integer
+    digits padded with headroom), and a VARCHAR that stays VARCHAR gets a
+    ``length`` sized to its widest value (with headroom). Returns
+    ``{header: type update}``.
     """
     import csv
 
@@ -344,8 +354,10 @@ def umfs_from_csvs(
             or ISO), DECIMAL, or INTEGER when every sampled value matches
             (leading-zero codes stay VARCHAR). Sizes are inferred from the
             sampled content too: DECIMAL ``precision``/``scale`` from the widest
-            integer/fractional parts, and a column that stays VARCHAR gets a
-            ``length`` sized to its widest value (padded with headroom). Default
+            integer/fractional parts (integer digits padded with headroom so
+            unsampled rows don't overflow the cast), and a column that stays
+            VARCHAR gets a ``length`` sized to its widest value (padded with
+            headroom). Default
             off: the all-VARCHAR starter spec the engineer enriches.
         group_dated: group date-suffixed files into monthly-family tables.
         primary_keys: ``{table_name: [key columns]}`` -- declares the key

@@ -181,8 +181,8 @@ def test_umfs_from_csvs_infer_types(tmp_path: Path) -> None:
     assert cols["svc_dt"].data_type == "DATE" and cols["svc_dt"].format == "YYYYMMDD"
     assert cols["iso_dt"].data_type == "DATE" and cols["iso_dt"].format == "YYYY-MM-DD"
     assert cols["amount"].data_type == "DECIMAL" and cols["amount"].scale == 2
-    # precision covers the widest integer part (3 for 120) plus scale (2).
-    assert cols["amount"].precision == 5
+    # precision: widest integer part (3 for 120) padded up to 4, plus scale (2).
+    assert cols["amount"].precision == 6
     assert cols["units"].data_type == "INTEGER"
     # VARCHAR columns are sized from their widest sampled value (with headroom).
     assert cols["claim_id"].data_type == "VARCHAR" and cols["claim_id"].length == 8
@@ -204,11 +204,13 @@ def test_umfs_from_csvs_infers_sizes(tmp_path: Path) -> None:
     )
     (umf,) = umfs_from_csvs(tmp_path, infer_types=True)
     cols = {c.name: c for c in umf.columns}
-    # big_amt: int part up to 6 digits, frac up to 3 -> DECIMAL(9, 3).
+    # big_amt: int part up to 6 digits (padded to 9), frac up to 3 -> DECIMAL(12, 3).
     assert cols["big_amt"].data_type == "DECIMAL"
-    assert (cols["big_amt"].precision, cols["big_amt"].scale) == (9, 3)
-    # small_amt: int part 1 digit, frac up to 2 -> DECIMAL(3, 2).
-    assert (cols["small_amt"].precision, cols["small_amt"].scale) == (3, 2)
+    assert (cols["big_amt"].precision, cols["big_amt"].scale) == (12, 3)
+    # small_amt: int part 1 digit (padded to 4), frac up to 2 -> DECIMAL(6, 2).
+    # Integer headroom matters: only 200 rows are sampled, and one more integer
+    # digit in an unsampled row makes the staging cast error.
+    assert (cols["small_amt"].precision, cols["small_amt"].scale) == (6, 2)
     # name: widest 10 chars -> padded (+30%) and rounded up to 16.
     assert cols["name"].data_type == "VARCHAR" and cols["name"].length == 16
 
