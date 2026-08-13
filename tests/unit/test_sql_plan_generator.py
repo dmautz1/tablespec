@@ -1028,6 +1028,47 @@ class TestOutputColumnOrder:
 
 
 # ---------------------------------------------------------------------------
+# TestBacktickQualification
+# ---------------------------------------------------------------------------
+
+
+class TestBacktickQualification:
+    """A backtick-quoted column in a derivation expression must be qualified
+    OUTSIDE its backticks (base.`Service`), never inside (`base.Service`,
+    which names a literal column that does not exist)."""
+
+    def test_backtick_column_qualified_outside_backticks(self):
+        base = _make_umf(
+            "spine",
+            [
+                UMFColumn(name="id", data_type="VARCHAR"),
+                UMFColumn(name="Service", data_type="VARCHAR"),
+            ],
+            primary_key=["id"],
+        )
+        target = _make_umf(
+            "gold_out",
+            [
+                UMFColumn(
+                    name="id", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="spine", column="id", priority=1)]),
+                ),
+                UMFColumn(
+                    name="service", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(
+                            table="spine", expression="TRIM(`Service`)", priority=1)]),
+                ),
+            ],
+        )
+        target.metadata = UMFMetadata(base_table="spine")
+        sql = SQLPlanGenerator().generate_for_table(target, {"spine": base})
+        assert "TRIM(base.`Service`)" in sql
+        assert "`base.Service`" not in sql
+
+
+# ---------------------------------------------------------------------------
 # TestBaseViewExpressionColumns
 # ---------------------------------------------------------------------------
 

@@ -2618,7 +2618,14 @@ LEFT JOIN {agg_view_name} agg
     def _rewrite_expression_for_alias(
         self, expression: str, alias_prefix: str, table_name: str
     ) -> str:
-        """Rewrite bare column references in *expression* with *alias_prefix*."""
+        """Rewrite bare column references in *expression* with *alias_prefix*.
+
+        Backtick-quoted identifiers (``\\`Service\\```) and single-quoted string
+        literals are handled specially: a quoted COLUMN is qualified OUTSIDE its
+        backticks (``base.\\`Service\\```, never ``\\`base.Service\\```), and tokens
+        inside a string literal are never rewritten. Bare tokens go through the
+        identifier regex as before.
+        """
         table_cols = set(self._get_table_columns(table_name))
 
         def _token_repl(m: re.Match[str]) -> str:
@@ -2627,7 +2634,19 @@ LEFT JOIN {agg_view_name} agg
                 return f"{alias_prefix}{tok}"
             return tok
 
-        return _IDENTIFIER_RE.sub(_token_repl, expression)
+        out: list[str] = []
+        # split into code / `backtick` / 'string' spans, rewriting only code
+        for span in re.split(r"(`[^`]*`|'(?:[^']|'')*')", expression):
+            if not span:
+                continue
+            if span[0] == "`":
+                inner = span[1:-1]
+                out.append(f"{alias_prefix}{span}" if inner in table_cols else span)
+            elif span[0] == "'":
+                out.append(span)
+            else:
+                out.append(_IDENTIFIER_RE.sub(_token_repl, span))
+        return "".join(out)
 
     # ------------------------------------------------------------------
     # Final assembly
