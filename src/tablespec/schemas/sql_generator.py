@@ -335,14 +335,26 @@ class SQLPlanGenerator:
             )
             raise ValueError(msg)
 
+        # The snapshot is generated as a plain plan (no scd block) under a
+        # DISTINCT name: the cte-mode terminal CTE is named after the table,
+        # and a CTE sharing the real target's name both shadows reads of the
+        # CURRENT target in the stage statement and defeats downstream
+        # canonicalizers' CTE merging (the name resolves to a real schema
+        # table). Self-referencing candidates are remapped to the same name.
+        snap_name = f"{table_name}__scd_snapshot"
         snapshot_umf = table_umf.model_copy(deep=True)
+        snapshot_umf.table_name = snap_name
         snapshot_umf.columns = [
             c for c in (table_umf.columns or []) if c.name not in bookkeeping
         ]
-        # the snapshot is generated WITHOUT the scd block (plain plan)
+        for col in snapshot_umf.columns:
+            if col.derivation and col.derivation.candidates:
+                for cand in col.derivation.candidates:
+                    if cand.table == table_name:
+                        cand.table = snap_name
         snapshot_umf.metadata = snapshot_umf.metadata.model_copy(update={"scd": None})
         snapshot_sql = self._convert_views_to_cte(
-            self._generate_table_sql(table_name, snapshot_umf, related_umfs)
+            self._generate_table_sql(snap_name, snapshot_umf, related_umfs)
         ).rstrip().rstrip(";")
 
         stage = f"{table_name}{scd.stage_suffix}"
