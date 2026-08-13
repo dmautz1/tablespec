@@ -1027,6 +1027,117 @@ class TestOutputColumnOrder:
 
 
 # ---------------------------------------------------------------------------
+# TestScdPlanEmission
+# ---------------------------------------------------------------------------
+
+
+class TestScdPlanEmission:
+    """metadata.scd emits the SCD2 staged-recompute plan (seed / stage /
+    swap / drop) instead of a single SELECT."""
+
+    def _corpus(self, *, scd: dict, columns: list[UMFColumn] | None = None):
+        src = _make_umf(
+            "scd_source",
+            [
+                UMFColumn(name="OrgID", data_type="VARCHAR", position="1"),
+                UMFColumn(name="PlanID", data_type="VARCHAR", position="2"),
+                UMFColumn(name="FinClass", data_type="VARCHAR", position="3"),
+            ],
+        )
+
+        def _col(name: str, pos: int, cand: dict | None = None) -> UMFColumn:
+            kwargs: dict = {}
+            if cand:
+                kwargs["derivation"] = UMFColumnDerivation(
+                    candidates=[DerivationCandidate(priority=1, **cand)],
+                )
+            return UMFColumn(
+                name=name, data_type="VARCHAR", position=str(pos), **kwargs
+            )
+
+        target = UMF(
+            version="1.0",
+            table_name="scd_target",
+            table_type="generated",
+            metadata={"scd": scd},
+            columns=columns
+            or [
+                _col("org_id", 1, {"table": "scd_source", "column": "OrgID"}),
+                _col("plan_id", 2, {"table": "scd_source", "column": "PlanID"}),
+                _col(
+                    "is_oon",
+                    3,
+                    {
+                        "table": "scd_source",
+                        "expression": "UPPER(TRIM(FinClass)) = 'COMMERCIAL'",
+                    },
+                ),
+                _col("fin_class", 4, {"table": "scd_source", "column": "FinClass"}),
+                _col("effective_from", 5),
+                _col("effective_to", 6),
+                _col("is_current", 7),
+            ],
+        )
+        return target, {"scd_source": src}
+
+    def test_emits_seed_stage_swap_drop(self):
+        target, related = self._corpus(
+            scd={"keys": ["org_id", "plan_id"], "tracked": ["is_oon", "fin_class"]},
+        )
+        plan = generate_sql_plan(target, related, mode="cte")
+        stmts = [s.strip() for s in plan.split(";")]
+        assert len(stmts) == 4
+        assert stmts[0].startswith("CREATE TABLE IF NOT EXISTS scd_target AS")
+        assert stmts[1].startswith(
+            "CREATE OR REPLACE TABLE scd_target__scd_stage AS"
+        )
+        assert stmts[2].startswith("CREATE OR REPLACE TABLE scd_target AS")
+        assert stmts[3] == "DROP TABLE scd_target__scd_stage"
+        # null-safe natural-key matching on every join
+        assert "e.org_id <=> n.org_id AND e.plan_id <=> n.plan_id" in plan
+        assert "e.org_id <=> c.org_id AND e.plan_id <=> c.plan_id" in plan
+        assert "LEFT ANTI JOIN to_close" in plan
+
+    def test_hash_follows_tracked_order(self):
+        target, related = self._corpus(
+            scd={"keys": ["org_id"], "tracked": ["fin_class", "is_oon"]},
+        )
+        plan = generate_sql_plan(target, related)
+        hash_start = plan.index("md5(concat_ws")
+        assert plan.index("CAST(fin_class AS STRING)", hash_start) < plan.index(
+            "CAST(is_oon AS STRING)", hash_start
+        )
+
+    def test_bookkeeping_excluded_from_snapshot(self):
+        target, related = self._corpus(
+            scd={"keys": ["org_id"], "tracked": ["is_oon"]},
+        )
+        plan = generate_sql_plan(target, related)
+        snapshot = plan[
+            plan.index("WITH new_snapshot AS (") : plan.index("hashed AS (")
+        ]
+        assert "effective_from" not in snapshot
+        assert "is_current" not in snapshot
+        # data columns still project in position order
+        assert snapshot.index("org_id") < snapshot.index("plan_id")
+
+    def test_missing_bookkeeping_column_raises(self):
+        target, related = self._corpus(
+            scd={"keys": ["org_id"], "tracked": ["is_oon"]},
+        )
+        target.columns = [c for c in target.columns if c.name != "effective_to"]
+        with pytest.raises(ValueError, match="bookkeeping column"):
+            generate_sql_plan(target, related)
+
+    def test_unknown_key_or_tracked_raises(self):
+        target, related = self._corpus(
+            scd={"keys": ["no_such_col"], "tracked": ["is_oon"]},
+        )
+        with pytest.raises(ValueError, match="keys/tracked"):
+            generate_sql_plan(target, related)
+
+
+# ---------------------------------------------------------------------------
 # TestRelationshipResolver
 # ---------------------------------------------------------------------------
 

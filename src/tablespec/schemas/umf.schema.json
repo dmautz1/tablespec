@@ -1858,6 +1858,65 @@
       "title": "Relationships",
       "type": "object"
     },
+    "ScdConfig": {
+      "description": "SCD2 (type-2 slowly changing dimension) staged-recompute declaration.\n\nWhen present on a generated table's metadata, the SQL plan generator\nemits a multi-statement staged-recompute plan instead of a single\nSELECT: (1) ``CREATE TABLE IF NOT EXISTS`` seed (initial load = current\nsnapshot), (2) a stage table computing closed / opened / carried rows\nby comparing the new snapshot against current target rows on the\nnatural key and a hash of the tracked columns, (3) swap the stage into\nthe target, (4) drop the stage. The recompute is staged because the new\nstate reads the CURRENT target \u2014 a self-referencing CTAS is not\nreliable.\n\nThe bookkeeping columns named by ``effective_from`` / ``effective_to``\n/ ``current_flag`` must exist on the table spec; they are emitted by\nthe plan itself and are excluded from the generated snapshot query.",
+      "properties": {
+        "keys": {
+          "description": "Natural-key columns; matched null-safely (<=>) between the snapshot and current rows",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Keys",
+          "type": "array"
+        },
+        "tracked": {
+          "description": "Columns whose value changes close and re-open history rows. Hash-compared in this exact order",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Tracked",
+          "type": "array"
+        },
+        "effective_from": {
+          "default": "effective_from",
+          "description": "Validity-open date column (stamped current_date() when a row opens)",
+          "title": "Effective From",
+          "type": "string"
+        },
+        "effective_to": {
+          "default": "effective_to",
+          "description": "Validity-close date column (NULL while current; stamped current_date() when a row closes)",
+          "title": "Effective To",
+          "type": "string"
+        },
+        "current_flag": {
+          "default": "is_current",
+          "description": "Boolean current-row flag column",
+          "title": "Current Flag",
+          "type": "string"
+        },
+        "null_sentinel": {
+          "default": "__null__",
+          "description": "Placeholder for NULL tracked values inside the change hash",
+          "title": "Null Sentinel",
+          "type": "string"
+        },
+        "stage_suffix": {
+          "default": "__scd_stage",
+          "description": "Suffix of the transient stage table the recompute writes before swapping into the target",
+          "title": "Stage Suffix",
+          "type": "string"
+        }
+      },
+      "required": [
+        "keys",
+        "tracked"
+      ],
+      "title": "ScdConfig",
+      "type": "object"
+    },
     "Survivorship": {
       "description": "Survivorship strategy for multi-source column derivation.",
       "properties": {
@@ -2707,6 +2766,18 @@
           "default": null,
           "description": "Final-assembly deduplication strategy (runs after all joins). 'distinct': emit SELECT DISTINCT so exact-duplicate rows produced by join fan-out are collapsed. Use when a joined table has higher cardinality than the base and you don't need every joined row.",
           "title": "Final Dedup"
+        },
+        "scd": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScdConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SCD2 staged-recompute declaration. When present, the SQL plan generator emits the multi-statement history-maintaining plan (seed / stage / swap / drop) instead of a single SELECT."
         },
         "output_config": {
           "anyOf": [

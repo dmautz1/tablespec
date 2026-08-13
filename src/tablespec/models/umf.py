@@ -1352,6 +1352,60 @@ class OutputConfig(BaseModel):
     )
 
 
+class ScdConfig(BaseModel):
+    """SCD2 (type-2 slowly changing dimension) staged-recompute declaration.
+
+    When present on a generated table's metadata, the SQL plan generator
+    emits a multi-statement staged-recompute plan instead of a single
+    SELECT: (1) ``CREATE TABLE IF NOT EXISTS`` seed (initial load = current
+    snapshot), (2) a stage table computing closed / opened / carried rows
+    by comparing the new snapshot against current target rows on the
+    natural key and a hash of the tracked columns, (3) swap the stage into
+    the target, (4) drop the stage. The recompute is staged because the new
+    state reads the CURRENT target — a self-referencing CTAS is not
+    reliable.
+
+    The bookkeeping columns named by ``effective_from`` / ``effective_to``
+    / ``current_flag`` must exist on the table spec; they are emitted by
+    the plan itself and are excluded from the generated snapshot query.
+    """
+
+    keys: list[str] = Field(
+        min_length=1,
+        description="Natural-key columns; matched null-safely (<=>) between "
+        "the snapshot and current rows",
+    )
+    tracked: list[str] = Field(
+        min_length=1,
+        description="Columns whose value changes close and re-open history "
+        "rows. Hash-compared in this exact order",
+    )
+    effective_from: str = Field(
+        default="effective_from",
+        description="Validity-open date column (stamped current_date() when "
+        "a row opens)",
+    )
+    effective_to: str = Field(
+        default="effective_to",
+        description="Validity-close date column (NULL while current; stamped "
+        "current_date() when a row closes)",
+    )
+    current_flag: str = Field(
+        default="is_current",
+        description="Boolean current-row flag column",
+    )
+    null_sentinel: str = Field(
+        default="__null__",
+        description="Placeholder for NULL tracked values inside the change "
+        "hash",
+    )
+    stage_suffix: str = Field(
+        default="__scd_stage",
+        description="Suffix of the transient stage table the recompute "
+        "writes before swapping into the target",
+    )
+
+
 class UMFMetadata(BaseModel):
     """Additional UMF metadata."""
 
@@ -1452,6 +1506,12 @@ class UMFMetadata(BaseModel):
         "'distinct': emit SELECT DISTINCT so exact-duplicate rows produced by join "
         "fan-out are collapsed. Use when a joined table has higher cardinality than "
         "the base and you don't need every joined row.",
+    )
+    scd: ScdConfig | None = Field(
+        default=None,
+        description="SCD2 staged-recompute declaration. When present, the SQL "
+        "plan generator emits the multi-statement history-maintaining plan "
+        "(seed / stage / swap / drop) instead of a single SELECT.",
     )
     output_config: OutputConfig | None = Field(
         default=None, description="Output file configuration"

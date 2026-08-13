@@ -277,10 +277,149 @@ class SQLPlanGenerator:
         if not table_name:
             msg = "table_name could not be determined from table_umf"
             raise ValueError(msg)
+        scd = table_umf.metadata.scd if table_umf.metadata else None
+        if scd is not None:
+            return self._generate_scd_plan(table_name, table_umf, related_umfs, scd)
         sql = self._generate_table_sql(table_name, table_umf, related_umfs)
         if mode == "cte":
             return self._convert_views_to_cte(sql)
         return sql
+
+    # ------------------------------------------------------------------
+    # SCD2 staged-recompute emission
+    # ------------------------------------------------------------------
+
+    def _generate_scd_plan(
+        self,
+        table_name: str,
+        table_umf: UMF,
+        related_umfs: dict[str, UMF],
+        scd: Any,
+    ) -> str:
+        """Emit the SCD2 staged-recompute plan (4 statements).
+
+        1. ``CREATE TABLE IF NOT EXISTS`` — initial load: the current
+           snapshot with open validity (no-op after the first run).
+        2. ``CREATE OR REPLACE TABLE <target><stage_suffix>`` — the staged
+           recompute: history rows pass through; current rows whose natural
+           key vanished from the snapshot or whose tracked-column hash
+           changed are CLOSED; unchanged current rows are carried; snapshot
+           rows with new keys or changed hashes are OPENED. Staged because
+           the new state reads the CURRENT target (a self-referencing CTAS
+           is not reliable).
+        3. Swap the stage into the target.
+        4. Drop the stage.
+
+        The snapshot query is the table's normal generated plan with the
+        SCD bookkeeping columns excluded (the plan itself emits them), and
+        is embedded as a nested subquery (Spark 3+ CTE-in-subquery).
+        Statements are separated by ``;``. Table names are unqualified —
+        the runtime resolves them via its session catalog/schema context.
+        """
+        bookkeeping = {scd.effective_from, scd.effective_to, scd.current_flag}
+        ordered = _output_ordered_columns(table_umf.columns or [])
+        spec_names = {c.name for c in ordered}
+        missing_book = sorted(bookkeeping - spec_names)
+        if missing_book:
+            msg = (
+                f"scd on {table_name}: bookkeeping column(s) {missing_book} "
+                "missing from the table spec"
+            )
+            raise ValueError(msg)
+        data_cols = [c.name for c in ordered if c.name not in bookkeeping]
+        missing = [c for c in [*scd.keys, *scd.tracked] if c not in data_cols]
+        if missing:
+            msg = (
+                f"scd on {table_name}: keys/tracked column(s) {missing} are "
+                "not data columns of the table spec"
+            )
+            raise ValueError(msg)
+
+        snapshot_umf = table_umf.model_copy(deep=True)
+        snapshot_umf.columns = [
+            c for c in (table_umf.columns or []) if c.name not in bookkeeping
+        ]
+        # the snapshot is generated WITHOUT the scd block (plain plan)
+        snapshot_umf.metadata = snapshot_umf.metadata.model_copy(update={"scd": None})
+        snapshot_sql = self._convert_views_to_cte(
+            self._generate_table_sql(table_name, snapshot_umf, related_umfs)
+        ).rstrip().rstrip(";")
+
+        stage = f"{table_name}{scd.stage_suffix}"
+        eff_from, eff_to, flag = (
+            scd.effective_from,
+            scd.effective_to,
+            scd.current_flag,
+        )
+        hash_args = ",\n      ".join(
+            f"coalesce(CAST({c} AS STRING), '{scd.null_sentinel}')"
+            for c in scd.tracked
+        )
+        hash_expr = f"md5(concat_ws('|',\n      {hash_args}))"
+
+        def _key_join(left: str, right: str) -> str:
+            return " AND ".join(f"{left}.{k} <=> {right}.{k}" for k in scd.keys)
+
+        first_key = scd.keys[0]
+        cols = ", ".join(data_cols)
+        cols_prefixed = ", ".join(f"e.{c}" for c in data_cols)
+        indent_snapshot = "\n".join(f"  {ln}" for ln in snapshot_sql.splitlines())
+
+        seed = (
+            f"CREATE TABLE IF NOT EXISTS {table_name} AS\n"
+            f"SELECT snap.*,\n"
+            f"  current_date() AS {eff_from},\n"
+            f"  CAST(NULL AS DATE) AS {eff_to},\n"
+            f"  TRUE AS {flag}\n"
+            f"FROM (\n{indent_snapshot}\n) snap"
+        )
+        stage_stmt = (
+            f"CREATE OR REPLACE TABLE {stage} AS\n"
+            f"WITH new_snapshot AS (\n{indent_snapshot}\n),\n"
+            f"hashed AS (\n"
+            f"  SELECT *, {hash_expr} AS _row_hash\n"
+            f"  FROM new_snapshot\n"
+            f"),\n"
+            f"existing AS (SELECT * FROM {table_name}),\n"
+            f"existing_current AS (\n"
+            f"  SELECT *, {hash_expr} AS _row_hash\n"
+            f"  FROM existing WHERE {flag} = TRUE\n"
+            f"),\n"
+            f"-- current rows leaving: gone from the snapshot, or tracked columns changed\n"
+            f"to_close AS (\n"
+            f"  SELECT e.* FROM existing_current e\n"
+            f"  LEFT JOIN hashed n\n"
+            f"    ON {_key_join('e', 'n')}\n"
+            f"  WHERE n.{first_key} IS NULL OR e._row_hash <> n._row_hash\n"
+            f"),\n"
+            f"-- snapshot rows arriving: new keys, or the new value of a changed key\n"
+            f"to_open AS (\n"
+            f"  SELECT n.* FROM hashed n\n"
+            f"  LEFT JOIN existing_current e\n"
+            f"    ON {_key_join('e', 'n')}\n"
+            f"  WHERE e.{first_key} IS NULL OR e._row_hash <> n._row_hash\n"
+            f")\n"
+            f"SELECT {cols},\n"
+            f"       {eff_from}, {eff_to}, {flag}\n"
+            f"FROM existing WHERE {flag} = FALSE\n"
+            f"UNION ALL\n"
+            f"SELECT {cols},\n"
+            f"       {eff_from}, current_date() AS {eff_to}, FALSE AS {flag}\n"
+            f"FROM to_close\n"
+            f"UNION ALL\n"
+            f"SELECT {cols_prefixed},\n"
+            f"       e.{eff_from}, e.{eff_to}, e.{flag}\n"
+            f"FROM existing_current e\n"
+            f"LEFT ANTI JOIN to_close c\n"
+            f"  ON {_key_join('e', 'c')}\n"
+            f"UNION ALL\n"
+            f"SELECT {cols},\n"
+            f"       current_date() AS {eff_from}, CAST(NULL AS DATE) AS {eff_to}, TRUE AS {flag}\n"
+            f"FROM to_open"
+        )
+        swap = f"CREATE OR REPLACE TABLE {table_name} AS\nSELECT * FROM {stage}"
+        drop = f"DROP TABLE {stage}"
+        return ";\n\n".join([seed, stage_stmt, swap, drop])
 
     # ------------------------------------------------------------------
     # CTE conversion
