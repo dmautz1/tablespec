@@ -1028,8 +1028,78 @@ class TestOutputColumnOrder:
 
 
 # ---------------------------------------------------------------------------
-# TestBacktickQualification
+# TestBaseTableAggregateJoin
 # ---------------------------------------------------------------------------
+
+
+class TestBaseTableAggregateJoin:
+    """A candidate with an aggregate expression over a source table becomes a
+    GROUP-BY pre-aggregation view joined back on the base key — for base-table
+    dims, not only union_sources targets."""
+
+    def _corpus(self):
+        ref = _make_umf(
+            "ref_elig",
+            [
+                UMFColumn(name="plan_id", data_type="INTEGER"),
+                UMFColumn(name="is_oon", data_type="BOOLEAN"),
+                UMFColumn(name="is_current", data_type="BOOLEAN"),
+            ],
+            primary_key=["plan_id"],
+        )
+        plan = _make_umf(
+            "bronze_plan",
+            [
+                UMFColumn(name="ID", data_type="INTEGER"),
+                UMFColumn(name="Name", data_type="VARCHAR"),
+            ],
+            primary_key=["ID"],
+        )
+
+        def col(name, cand):
+            return UMFColumn(name=name, data_type="VARCHAR", source="derived",
+                             derivation=UMFColumnDerivation(
+                                 candidates=[DerivationCandidate(priority=1, **cand)]))
+
+        target = _make_umf(
+            "dim_plan",
+            [
+                col("plan_id", {"table": "bronze_plan", "column": "ID"}),
+                col("is_oon", {"table": "ref_elig",
+                               "expression": "MAX(CAST(is_oon AS INT))",
+                               "column": "is_oon", "row_filter": "is_current = TRUE"}),
+            ],
+            primary_key=["plan_id"],
+        )
+        target.metadata = UMFMetadata(base_table="bronze_plan")
+        return target, {"ref_elig": ref, "bronze_plan": plan}
+
+    def test_aggregate_becomes_group_by_view_with_filter(self):
+        target, related = self._corpus()
+        sql = SQLPlanGenerator().generate_for_table(target, related)
+        # one GROUP-BY pre-aggregation view, filtered
+        assert "GROUP BY plan_id" in sql
+        assert "WHERE is_current = TRUE" in sql
+        # joined back on the base's real key column (ID), not the renamed PK
+        assert "ON base.ID = agg.plan_id" in sql
+        # NOT also joined as a fanned-out first_record/direct join
+        assert sql.count("MAX(CAST(is_oon AS INT))") == 1
+        assert "First Record" not in sql
+
+    def test_mixed_source_stays_a_normal_join(self):
+        """A source contributing BOTH aggregate and plain columns is not
+        excluded — it stays a regular join (aggregates resolve in assembly)."""
+        from tablespec.schemas.relationship_resolver import RelationshipResolver
+
+        target, related = self._corpus()
+        # add a plain pass-through from ref_elig
+        target.columns.append(
+            UMFColumn(name="a_current", data_type="BOOLEAN", source="derived",
+                      derivation=UMFColumnDerivation(candidates=[
+                          DerivationCandidate(table="ref_elig", column="is_current", priority=1)]))
+        )
+        agg = RelationshipResolver(related)._aggregated_source_tables(target)
+        assert "ref_elig" not in agg
 
 
 class TestBacktickQualification:

@@ -200,11 +200,17 @@ class RelationshipResolver:
                 or []
             )
 
+        # Fully-aggregated sources become GROUP-BY pre-aggregation views joined
+        # back on the base key — they must NOT also become a regular
+        # (first_record/direct) join. A source is aggregated when EVERY column
+        # it contributes is an aggregate expression (MAX/MIN/SUM/COUNT).
+        aggregated_sources = self._aggregated_source_tables(target_umf)
+
         for rel in all_relationships:
             tgt = rel.get("target_table")
             if not tgt or tgt not in contributing_tables:
                 continue
-            if tgt in union_branch_tables:
+            if tgt in union_branch_tables or tgt in aggregated_sources:
                 continue
 
             alternative_joins = rel.get("alternative_joins") or []
@@ -436,6 +442,37 @@ class RelationshipResolver:
             umf = self.all_umfs[table_name]
             return [col.name for col in umf.columns] if umf.columns else []
         return []
+
+    # Aggregate-function prefixes that mark a candidate expression as an
+    # aggregation (mirrors the generator's _generate_pre_aggregation_views).
+    _AGG_FUNCS = ("COUNT(", "MIN(", "MAX_BY(", "MAX(", "SUM(", "AVG(")
+
+    def _aggregated_source_tables(self, target_umf: UMF) -> set[str]:
+        """Source tables whose EVERY contributed column is an aggregate.
+
+        Such a source is materialized as a GROUP-BY pre-aggregation view and
+        joined back on the base key, so it must be excluded from the regular
+        join sequence (else it is joined twice — once fanned-out, once
+        aggregated). A source with a MIX of aggregate and plain columns stays a
+        normal join (the aggregate columns then resolve in final assembly).
+        """
+        per_table_all_agg: dict[str, bool] = {}
+        for col in target_umf.columns:
+            if not (col.derivation and col.derivation.candidates):
+                continue
+            for cand in col.derivation.candidates:
+                if not cand.table:
+                    continue
+                bare = cand.table.split(".", 1)[1] if "." in cand.table else cand.table
+                expr_upper = (cand.expression or "").upper()
+                is_agg = any(fn in expr_upper for fn in self._AGG_FUNCS)
+                # once any non-aggregate column is seen, the table is not
+                # fully-aggregated
+                if bare in per_table_all_agg:
+                    per_table_all_agg[bare] = per_table_all_agg[bare] and is_agg
+                else:
+                    per_table_all_agg[bare] = is_agg
+        return {t for t, all_agg in per_table_all_agg.items() if all_agg}
 
     def _get_contributing_instances(
         self, target_umf: UMF

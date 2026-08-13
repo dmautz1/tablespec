@@ -617,6 +617,15 @@ class SQLPlanGenerator:
                     self._join_source_columns(join_sequence),
                 )
             )
+            # Pre-aggregation views also apply to base-table dims: a candidate
+            # whose expression is an aggregate (MAX/MIN/SUM/COUNT) over a source
+            # table becomes a GROUP-BY view joined back on the base's key. The
+            # join-back key is resolved from the target-PK column's own
+            # derivation (its base column), so the agg need not share the base's
+            # key NAME (dim_payer: base bronze_ins_plan.ID, agg grouped by
+            # ins_plan_id, joined base.ID = agg.ins_plan_id).
+            agg_sections = self._generate_pre_aggregation_views(table_umf, [])
+            sections.extend(agg_sections)
         else:
             self.logger.info(
                 f"No base table for {table_name} - generating synthetic table from derivations"
@@ -1769,6 +1778,25 @@ INNER JOIN {lookup_table} lookup
 GROUP BY lookup.{join_via_spec.lookup_key};"""
             else:
                 col_prefix = "src." if has_alias else ""
+                # Optional WHERE from the candidate row_filter (all group_by
+                # specs for a source must agree — the pre-aggregation is one
+                # filtered subset; dim_payer's ref_elig is WHERE is_current).
+                filters = {
+                    (s.get("row_filter") or "").strip()
+                    for s in group_by_specs
+                    if (s.get("row_filter") or "").strip()
+                }
+                if len(filters) > 1:
+                    msg = (
+                        f"conflicting row_filter values on {source_table} GROUP-BY "
+                        f"aggregation: {sorted(filters)}"
+                    )
+                    raise ValueError(msg)
+                where_clause = (
+                    f"\nWHERE {self._substitute_template_vars(next(iter(filters)))}"
+                    if filters
+                    else ""
+                )
                 section = f"""-- ============================================================================
 -- PRE-AGGREGATION: {source_table} aggregate columns
 -- ============================================================================
@@ -1776,7 +1804,7 @@ CREATE OR REPLACE TEMPORARY VIEW {group_view_name} AS
 SELECT
   {col_prefix}{join_col} AS {pk_col},
 {agg_columns_str}
-FROM {from_clause}
+FROM {from_clause}{where_clause}
 GROUP BY {col_prefix}{join_col};"""
             sections.append(section)
 
@@ -2526,6 +2554,29 @@ LEFT JOIN {table_alias}_first target
     # Aggregation view join
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _base_column_for(table_umf: UMF, col_name: str) -> str | None:
+        """The base-table source column a simple target column derives from.
+
+        Returns the ``column`` of the highest-priority candidate whose table is
+        the base table (metadata.base_table), for a plain pass-through column
+        (no aggregate/expression). Used to resolve a pre-aggregation join-back
+        to a real base-view column when the target PK is renamed."""
+        base_table = table_umf.metadata.base_table if table_umf.metadata else None
+        if not base_table:
+            return None
+        _, base_bare = _parse_table_ref(base_table)
+        for col in table_umf.columns:
+            if col.name != col_name or not col.derivation:
+                continue
+            for cand in sorted(
+                col.derivation.candidates or [], key=lambda c: c.priority
+            ):
+                _, cand_bare = _parse_table_ref(cand.table or "")
+                if cand_bare == base_bare and cand.column and not cand.expression:
+                    return cand.column
+        return None
+
     def _generate_agg_view_join(
         self,
         step: int,
@@ -2558,6 +2609,14 @@ LEFT JOIN {table_alias}_first target
             derived_expr = self._get_derived_column_expression(table_umf, source_col)
             if derived_expr:
                 join_key_expr = derived_expr.replace(pk_col, f"base.{pk_col}")
+        elif pk_col not in self._accumulated_columns:
+            # The base view carries the base's OWN column names, not the target
+            # PK alias — resolve the PK column's base derivation so the join-back
+            # keys on a real base column (dim_payer: PK ins_plan_id derives from
+            # bronze_ins_plan.ID, so join on base.ID).
+            base_col = self._base_column_for(table_umf, pk_col)
+            if base_col and base_col != pk_col:
+                join_key_expr = f"base.{base_col}"
 
         return f"""-- ============================================================================
 -- STEP {step}: Join {agg_view_name} (Pre-aggregated Data)
