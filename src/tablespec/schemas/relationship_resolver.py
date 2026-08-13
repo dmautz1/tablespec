@@ -50,6 +50,9 @@ class JoinInfo:
     join_type: Literal["left", "inner"] = "left"
     # Alternative join paths (source_column/target_column dicts, priority order)
     alternative_joins: list[dict[str, str]] = field(default_factory=list)
+    # Expression join keys (SQL over source/target columns; direct joins only)
+    source_expression: str | None = None
+    target_expression: str | None = None
 
 
 @dataclass
@@ -220,6 +223,8 @@ class RelationshipResolver:
                     table_instance=inst,
                     join_filter=None,
                     alternative_joins=alternative_joins,
+                    source_expression=rel.get("source_expression"),
+                    target_expression=rel.get("target_expression"),
                 )
 
                 if key not in candidates_by_key:
@@ -329,6 +334,10 @@ class RelationshipResolver:
                     d["reasoning"] = rel.reasoning
                 if rel.alternative_joins:
                     d["alternative_joins"] = [dict(a) for a in rel.alternative_joins]
+                if rel.source_expression:
+                    d["source_expression"] = rel.source_expression
+                if rel.target_expression:
+                    d["target_expression"] = rel.target_expression
                 result.append(d)
             return result
         return []
@@ -951,6 +960,10 @@ class RelationshipResolver:
             d["table_instance"] = j.table_instance
         if j.join_filter:
             d["join_filter"] = j.join_filter
+        if j.source_expression:
+            d["source_expression"] = j.source_expression
+        if j.target_expression:
+            d["target_expression"] = j.target_expression
         if j.join_via:
             d["join_via"] = {
                 "source_key": j.join_via.source_key,

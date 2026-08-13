@@ -2050,7 +2050,22 @@ WHERE rn = 1;"""
         all_selections = base_column_selections + target_column_selections
         column_list = ",\n  ".join(all_selections)
 
-        on_clause = f"base.{source_col} = target.{target_col}"
+        source_expression = join_info.get("source_expression")
+        target_expression = join_info.get("target_expression")
+        left_key = (
+            self._rewrite_join_filter(
+                source_expression, target_table, alias="base",
+                columns=list(self._accumulated_columns),
+            )
+            if source_expression
+            else f"base.{source_col}"
+        )
+        right_key = (
+            self._rewrite_join_filter(target_expression, target_table)
+            if target_expression
+            else f"target.{target_col}"
+        )
+        on_clause = f"{left_key} = {right_key}"
         if join_filter:
             rewritten_filter = self._rewrite_join_filter(join_filter, target_table)
             on_clause += f" AND {rewritten_filter}"
@@ -2520,7 +2535,11 @@ LEFT JOIN {agg_view_name} agg
     # ------------------------------------------------------------------
 
     def _rewrite_join_filter(
-        self, join_filter: str, target_table: str, alias: str = "target"
+        self,
+        join_filter: str,
+        target_table: str,
+        alias: str = "target",
+        columns: list[str] | None = None,
     ) -> str:
         """Rewrite bare column references in a join filter to use the given alias.
 
@@ -2534,7 +2553,9 @@ LEFT JOIN {agg_view_name} agg
         never be re-matched as a bare token for another.
         """
         table_cols = sorted(
-            set(self._get_table_columns(target_table)), key=len, reverse=True
+            set(columns if columns is not None else self._get_table_columns(target_table)),
+            key=len,
+            reverse=True,
         )
         if not table_cols:
             return join_filter

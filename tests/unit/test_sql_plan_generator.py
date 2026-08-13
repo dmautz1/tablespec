@@ -6,6 +6,7 @@ import pytest
 
 from tablespec.models.umf import (
     Cardinality,
+    UMFMetadata,
     DerivationCandidate,
     OutgoingRelationship,
     Relationships,
@@ -1024,6 +1025,72 @@ class TestOutputColumnOrder:
         )
         # position order (zz before aa) must survive; alphabetical would invert
         assert sql.index("zz_col") < sql.index("aa_col")
+
+
+# ---------------------------------------------------------------------------
+# TestExpressionJoinKeys
+# ---------------------------------------------------------------------------
+
+
+class TestExpressionJoinKeys:
+    """relationships.outgoing source_expression/target_expression replace the
+    plain column equality in direct-join ON clauses (e.g. TRIM-keyed joins)."""
+
+    def test_direct_join_uses_expression_keys(self):
+        base = _make_umf(
+            "exp_base",
+            [
+                UMFColumn(name="id", data_type="VARCHAR"),
+                UMFColumn(name="npi", data_type="VARCHAR"),
+            ],
+            primary_key=["id"],
+            relationships=Relationships(
+                summary=RelationshipSummary(
+                    total_relationships=1, total_incoming=0,
+                    total_outgoing=1, hub_score=5.0,
+                ),
+                outgoing=[
+                    OutgoingRelationship(
+                        target_table="exp_registry",
+                        source_column="npi",
+                        target_column="npi",
+                        source_expression="TRIM(npi)",
+                        target_expression="TRIM(npi)",
+                        type="foreign_to_primary",
+                        confidence=1.0,
+                    ),
+                ],
+            ),
+        )
+        registry = _make_umf(
+            "exp_registry",
+            [
+                UMFColumn(name="npi", data_type="VARCHAR"),
+                UMFColumn(name="entity_type", data_type="VARCHAR"),
+            ],
+            primary_key=["npi"],
+        )
+        target = _make_umf(
+            "exp_dim",
+            [
+                UMFColumn(
+                    name="id", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="exp_base", column="id", priority=1)]),
+                ),
+                UMFColumn(
+                    name="entity_type", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="exp_registry", column="entity_type", priority=1)]),
+                ),
+            ],
+        )
+        target.metadata = UMFMetadata(base_table="exp_base")
+        sql = SQLPlanGenerator().generate_for_table(
+            target, {"exp_base": base, "exp_registry": registry}
+        )
+        assert "ON TRIM(base.npi) = TRIM(target.npi)" in sql
+        assert "ON base.npi = target.npi" not in sql
 
 
 # ---------------------------------------------------------------------------

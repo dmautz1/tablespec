@@ -1258,6 +1258,20 @@ class OutgoingRelationship(BaseModel):
         description="Alternative join conditions using OR logic. Each dict specifies "
         "source_column and target_column for additional join paths.",
     )
+    source_expression: str | None = Field(
+        default=None,
+        description="SQL expression over the SOURCE table's columns to use as the "
+        "join key instead of source_column (e.g. 'TRIM(NPI)'). Bare column tokens "
+        "are qualified with the base alias at generation time. Consumed by direct "
+        "joins only.",
+    )
+    target_expression: str | None = Field(
+        default=None,
+        description="SQL expression over the TARGET table's columns to use as the "
+        "join key instead of target_column (e.g. 'TRIM(NPI)'). Bare column tokens "
+        "are qualified with the target alias at generation time. Consumed by direct "
+        "joins only.",
+    )
 
     def parse_table_reference(self) -> "TableReference":
         """Parse target_table into TableReference with optional pipeline qualification.
