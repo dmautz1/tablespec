@@ -1028,6 +1028,90 @@ class TestOutputColumnOrder:
 
 
 # ---------------------------------------------------------------------------
+# TestLookupJoin
+# ---------------------------------------------------------------------------
+
+
+class TestLookupJoin:
+    """relationships.outgoing lookup_join emits a two-hop join through a bridge
+    table (base -> bridge -> target) when base and target share no direct key."""
+
+    def test_two_hop_join_emits_bridge_then_target(self):
+        from tablespec.models.umf import LookupJoin
+
+        base = _make_umf(
+            "fact_line",
+            [
+                UMFColumn(name="line_id", data_type="VARCHAR"),
+                UMFColumn(name="incident_id", data_type="VARCHAR"),
+            ],
+            primary_key=["line_id"],
+            relationships=Relationships(
+                summary=RelationshipSummary(
+                    total_relationships=1, total_incoming=0,
+                    total_outgoing=1, hub_score=5.0,
+                ),
+                outgoing=[
+                    OutgoingRelationship(
+                        target_table="dim_facility",
+                        source_column="incident_id",
+                        target_column="facility_id",
+                        type="foreign_to_primary",
+                        confidence=1.0,
+                        lookup_join=LookupJoin(
+                            source_key="incident_id",
+                            bridge_table="bronze_incident",
+                            bridge_source_key="id",
+                            bridge_target_key="facility_id",
+                        ),
+                    ),
+                ],
+            ),
+        )
+        incident = _make_umf(
+            "bronze_incident",
+            [
+                UMFColumn(name="id", data_type="VARCHAR"),
+                UMFColumn(name="facility_id", data_type="VARCHAR"),
+            ],
+            primary_key=["id"],
+        )
+        facility = _make_umf(
+            "dim_facility",
+            [
+                UMFColumn(name="facility_id", data_type="VARCHAR"),
+                UMFColumn(name="facility_name", data_type="VARCHAR"),
+            ],
+            primary_key=["facility_id"],
+        )
+        target = _make_umf(
+            "gold_line",
+            [
+                UMFColumn(
+                    name="line_id", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="fact_line", column="line_id", priority=1)]),
+                ),
+                UMFColumn(
+                    name="facility_name", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="dim_facility", column="facility_name", priority=1)]),
+                ),
+            ],
+        )
+        target.metadata = UMFMetadata(base_table="fact_line")
+        sql = SQLPlanGenerator().generate_for_table(
+            target,
+            {"fact_line": base, "bronze_incident": incident, "dim_facility": facility},
+        )
+        # bridge joined on the base key, target joined on the bridge's target key
+        assert "JOIN bronze_incident" in sql
+        assert "ON base.incident_id = dim_facility_bridge.id" in sql
+        assert "ON target.facility_id = dim_facility_bridge.facility_id" in sql
+        assert "target.facility_name AS dim_facility__facility_name" in sql
+
+
+# ---------------------------------------------------------------------------
 # TestExpressionJoinKeys
 # ---------------------------------------------------------------------------
 

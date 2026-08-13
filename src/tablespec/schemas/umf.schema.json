@@ -1343,6 +1343,39 @@
       "title": "JsonSource",
       "type": "object"
     },
+    "LookupJoin": {
+      "description": "Two-hop join specification: reach a target table through a bridge.\n\nUsed when the base table shares no direct key with the target, but a\nbridge table links them (e.g. a fact row carries ``IncidentID``; the\nfacility dim is keyed on ``facility_id``; ``bronze_incident`` bridges\nthem via ``ID`` and ``FacilityID``). The generator emits\n``base JOIN bridge ON base.source_key = bridge.bridge_source_key`` then\n``JOIN target ON bridge.bridge_target_key = target.<target_column>``.",
+      "properties": {
+        "source_key": {
+          "description": "Column on the BASE table that keys into the bridge (e.g. 'IncidentID')",
+          "title": "Source Key",
+          "type": "string"
+        },
+        "bridge_table": {
+          "description": "The intermediary table joining base to target (e.g. 'bronze_incident')",
+          "title": "Bridge Table",
+          "type": "string"
+        },
+        "bridge_source_key": {
+          "description": "Column on the bridge that matches the base's source_key (e.g. 'ID')",
+          "title": "Bridge Source Key",
+          "type": "string"
+        },
+        "bridge_target_key": {
+          "description": "Column on the bridge that keys into the target (e.g. 'FacilityID')",
+          "title": "Bridge Target Key",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_key",
+        "bridge_table",
+        "bridge_source_key",
+        "bridge_target_key"
+      ],
+      "title": "LookupJoin",
+      "type": "object"
+    },
     "Nullable": {
       "additionalProperties": true,
       "description": "Nullable configuration per context (e.g., Line of Business).\n\nAccepts arbitrary context keys with boolean values. Common healthcare\ncontexts include MD (Medicaid), MP (Medicare Part D), ME (Medicare),\nbut any domain-specific keys are supported.\n\nExamples:\n    Nullable(MD=False, MP=False, ME=False)      # Healthcare LOBs\n    Nullable(US=False, EU=True)                  # Regional contexts\n    Nullable(production=False, staging=True)      # Environment contexts",

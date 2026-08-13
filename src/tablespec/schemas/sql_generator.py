@@ -2050,6 +2050,34 @@ WHERE rn = 1;"""
         all_selections = base_column_selections + target_column_selections
         column_list = ",\n  ".join(all_selections)
 
+        join_type = join_info.get("join_type", "left").upper()
+        join_clause = f"{join_type} JOIN"
+
+        step_label = (
+            f"{target_table} as {table_alias}" if table_instance else target_table
+        )
+
+        lookup_join = join_info.get("lookup_join")
+        if lookup_join:
+            # Two-hop: base -> bridge -> target. The bridge is joined on the
+            # base's source_key, then the target on the bridge's target key.
+            bridge_table = self._resolve_table_name(lookup_join.bridge_table)
+            bridge_alias = f"{sanitized_alias}_bridge"
+            on_clause = f"target.{target_col} = {bridge_alias}.{lookup_join.bridge_target_key}"
+            if join_filter:
+                on_clause += f" AND {self._rewrite_join_filter(join_filter, target_table)}"
+            return f"""-- ============================================================================
+-- STEP {step}: Join {step_label} (Two-Hop via {lookup_join.bridge_table} - {cardinality})
+-- ============================================================================
+CREATE OR REPLACE TEMPORARY VIEW disposition_step_{step} AS
+SELECT
+  {column_list}
+FROM {prev_view} base
+{join_clause} {bridge_table} {bridge_alias}
+  ON base.{lookup_join.source_key} = {bridge_alias}.{lookup_join.bridge_source_key}
+{join_clause} {resolved_table} target
+  ON {on_clause};"""
+
         source_expression = join_info.get("source_expression")
         target_expression = join_info.get("target_expression")
         left_key = (
@@ -2069,13 +2097,6 @@ WHERE rn = 1;"""
         if join_filter:
             rewritten_filter = self._rewrite_join_filter(join_filter, target_table)
             on_clause += f" AND {rewritten_filter}"
-
-        step_label = (
-            f"{target_table} as {table_alias}" if table_instance else target_table
-        )
-
-        join_type = join_info.get("join_type", "left").upper()
-        join_clause = f"{join_type} JOIN"
 
         return f"""-- ============================================================================
 -- STEP {step}: Join {step_label} (Direct Join - {cardinality})

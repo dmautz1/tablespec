@@ -53,6 +53,8 @@ class JoinInfo:
     # Expression join keys (SQL over source/target columns; direct joins only)
     source_expression: str | None = None
     target_expression: str | None = None
+    # Two-hop join through a bridge table (direct joins only)
+    lookup_join: object | None = None
 
 
 @dataclass
@@ -225,6 +227,7 @@ class RelationshipResolver:
                     alternative_joins=alternative_joins,
                     source_expression=rel.get("source_expression"),
                     target_expression=rel.get("target_expression"),
+                    lookup_join=rel.get("lookup_join"),
                 )
 
                 if key not in candidates_by_key:
@@ -338,6 +341,8 @@ class RelationshipResolver:
                     d["source_expression"] = rel.source_expression
                 if rel.target_expression:
                     d["target_expression"] = rel.target_expression
+                if rel.lookup_join:
+                    d["lookup_join"] = rel.lookup_join
                 result.append(d)
             return result
         return []
@@ -964,6 +969,8 @@ class RelationshipResolver:
             d["source_expression"] = j.source_expression
         if j.target_expression:
             d["target_expression"] = j.target_expression
+        if j.lookup_join:
+            d["lookup_join"] = j.lookup_join
         if j.join_via:
             d["join_via"] = {
                 "source_key": j.join_via.source_key,
