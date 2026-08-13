@@ -15,6 +15,9 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+import sqlglot
+from sqlglot import exp
+
 from tablespec.core.relations import LiteralRenderer, TableRenderer
 
 from .relationship_resolver import RelationshipResolver
@@ -737,22 +740,37 @@ class SQLPlanGenerator:
         return required
 
     def _extract_columns_from_expression(self, expression: str) -> list[str]:
-        """Extract likely column references from a SQL expression."""
-        pattern = r"\b([a-zA-Z][a-zA-Z0-9_]*)\b"
-        matches = re.findall(pattern, expression)
+        """Extract column references from a SQL expression.
+
+        Parses the expression with sqlglot and returns the bare names of every
+        Column node (dropping any table qualifier and the ``alias__`` join
+        prefix). Falls back to a keyword-filtered identifier regex only when the
+        expression does not parse. The AST path is authoritative: an all-caps
+        column name (``QPA``) is a real column, not a keyword — the old regex
+        dropped it and the base view omitted it, breaking downstream refs.
+        """
+        try:
+            parsed = sqlglot.parse_one(expression, read="spark")
+        except Exception:  # noqa: BLE001 - regex fallback below
+            parsed = None
 
         columns: list[str] = []
-        for match in matches:
-            if match.upper() in _SQL_KEYWORDS:
+        if parsed is not None:
+            seen: set[str] = set()
+            for col in parsed.find_all(exp.Column):
+                name = col.name
+                if "__" in name:
+                    name = name.split("__")[-1]
+                if name and name not in seen:
+                    seen.add(name)
+                    columns.append(name)
+            return columns
+
+        pattern = r"\b([a-zA-Z][a-zA-Z0-9_]*)\b"
+        for match in re.findall(pattern, expression):
+            if match.upper() in _SQL_KEYWORDS or len(match) == 1:
                 continue
-            if len(match) == 1:
-                continue
-            if match.isupper():
-                continue
-            if "__" in match:
-                columns.append(match.split("__")[-1])
-            else:
-                columns.append(match)
+            columns.append(match.split("__")[-1] if "__" in match else match)
         return columns
 
     def _get_required_columns_for_table(self, table_name: str) -> set[str] | None:

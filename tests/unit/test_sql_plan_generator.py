@@ -1028,6 +1028,49 @@ class TestOutputColumnOrder:
 
 
 # ---------------------------------------------------------------------------
+# TestBaseViewExpressionColumns
+# ---------------------------------------------------------------------------
+
+
+class TestBaseViewExpressionColumns:
+    """Columns referenced only inside an expression candidate must survive
+    into the base view — the old regex dropped all-caps names as keywords."""
+
+    def test_uppercase_expression_column_reaches_base_view(self):
+        base = _make_umf(
+            "spine",
+            [
+                UMFColumn(name="ServiceLineID", data_type="VARCHAR"),
+                UMFColumn(name="AwardAmount", data_type="DECIMAL"),
+                UMFColumn(name="QPA", data_type="DECIMAL"),
+            ],
+            primary_key=["ServiceLineID"],
+        )
+        target = _make_umf(
+            "gold_out",
+            [
+                UMFColumn(
+                    name="sl_id", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="spine", column="ServiceLineID", priority=1)]),
+                ),
+                UMFColumn(
+                    name="idr_increase", data_type="DECIMAL",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(
+                            table="spine", expression="AwardAmount - QPA", priority=1)]),
+                ),
+            ],
+        )
+        target.metadata = UMFMetadata(base_table="spine")
+        sql = SQLPlanGenerator().generate_for_table(target, {"spine": base})
+        # QPA (all-caps, expression-only) must be in the base view projection
+        base_view = sql.split("STEP 0")[1].split("STEP 1")[0] if "STEP 1" in sql else sql
+        assert "QPA" in base_view
+        assert "base.AwardAmount - base.QPA" in sql
+
+
+# ---------------------------------------------------------------------------
 # TestLookupJoin
 # ---------------------------------------------------------------------------
 
