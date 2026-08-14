@@ -1449,6 +1449,25 @@ class TestCompositeJoinKeysAndFullOuter:
         assert "target.billed_amount AS cj_header__billed_amount" in sql
         assert "JOIN cj_header" in sql
 
+    def test_intermediate_base_refs_reach_base_view(self):
+        # a verbatim expression referencing base.npi (no plain candidate
+        # requires npi) must still get npi projected by the base view
+        target, related = self._corpus()
+        target.columns = [c for c in target.columns if c.name != "payor"]
+        target.columns.append(
+            UMFColumn(
+                name="flagged", data_type="BOOLEAN",
+                derivation=UMFColumnDerivation(candidates=[
+                    DerivationCandidate(
+                        table="intermediate", priority=1,
+                        expression="CASE WHEN base.npi IS NULL THEN TRUE ELSE FALSE END",
+                    )]),
+            )
+        )
+        sql = SQLPlanGenerator().generate_for_table(target, related)
+        base_view = sql.split("STEP 0")[1].split("STEP 1")[0]
+        assert "npi" in base_view
+
     def test_underscore_canonical_name_emits_physical_column(self):
         target, related = self._corpus()
         target.columns.append(

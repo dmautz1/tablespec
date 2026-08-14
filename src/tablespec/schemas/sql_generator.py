@@ -889,6 +889,13 @@ class SQLPlanGenerator:
             if col in base_columns and col not in selected_columns:
                 selected_columns.append(col)
 
+        # Verbatim (intermediate-attributed) expressions may reference base
+        # columns no plain candidate requires (a window tiebreak on base.ID) —
+        # any intermediate-required name that IS a base column gets projected
+        for col in self._get_required_columns_for_table("intermediate") or []:
+            if col in base_columns and col not in selected_columns:
+                selected_columns.append(col)
+
         for col in selected_columns:
             self._accumulated_columns[col] = "base"
 
