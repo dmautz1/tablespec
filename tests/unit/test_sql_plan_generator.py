@@ -1462,6 +1462,24 @@ class TestCompositeJoinKeysAndFullOuter:
         assert "AS _debug" in sql
         assert "AS u_debug" not in sql
 
+    def test_underscore_source_column_reaches_base_view(self):
+        # a SOURCE table storing _raw under the safe name u_raw must project
+        # the PHYSICAL name in the base view and resolve pass-through mappings
+        target, related = self._corpus()
+        related["cj_detail"].columns.append(
+            UMFColumn(name="u_raw", canonical_name="_raw", data_type="VARCHAR")
+        )
+        target.columns.append(
+            UMFColumn(
+                name="u_raw", canonical_name="_raw", data_type="VARCHAR",
+                derivation=UMFColumnDerivation(candidates=[
+                    DerivationCandidate(table="cj_detail", column="_raw", priority=1)]),
+            )
+        )
+        sql = SQLPlanGenerator().generate_for_table(target, related)
+        assert "base._raw AS _raw" in sql
+        assert "u_raw" not in sql
+
     def test_left_one_to_many_still_first_records(self):
         target, related = self._corpus(
             cardinality=Cardinality(

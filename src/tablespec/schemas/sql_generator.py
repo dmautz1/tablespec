@@ -701,7 +701,15 @@ class SQLPlanGenerator:
         if umf is None:
             self.logger.warning(f"Table {table_name} not found in related_umfs")
             return []
-        return [col.name for col in umf.columns] if umf.columns else []
+        # physical names: a leading-underscore canonical_name IS the physical
+        # column (_invoice stored under the UMF-safe name u_invoice) — every
+        # SQL surface (base view, joins, expression rewriting) speaks physical
+        return [
+            col.canonical_name
+            if (col.canonical_name or "").startswith("_")
+            else col.name
+            for col in umf.columns
+        ] if umf.columns else []
 
     # ------------------------------------------------------------------
     # Template variable substitution
