@@ -2780,7 +2780,15 @@ LEFT JOIN {agg_view_name} agg
         column_mappings: list[str] = []
 
         for col_def in _output_ordered_columns(table_umf.columns):
-            col_name = col_def.name
+            # UMF-safe name vs physical name: a canonical_name with a leading
+            # underscore is the PHYSICAL output column (`_invoice` stored under
+            # the safe name `u_invoice`) — emit the physical name, matching the
+            # DDL exporter's convention
+            col_name = (
+                col_def.canonical_name
+                if (col_def.canonical_name or "").startswith("_")
+                else col_def.name
+            )
             derivation = col_def.derivation
             data_type = (col_def.data_type or "STRING").upper()
             column_default = col_def.default

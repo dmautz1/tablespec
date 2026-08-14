@@ -1445,6 +1445,19 @@ class TestCompositeJoinKeysAndFullOuter:
         sql = SQLPlanGenerator().generate_for_table(target, related)
         assert "target.billed_amount AS cj_header__billed_amount" in sql
 
+    def test_underscore_canonical_name_emits_physical_column(self):
+        target, related = self._corpus()
+        target.columns.append(
+            UMFColumn(
+                name="u_debug", canonical_name="_debug", data_type="VARCHAR",
+                derivation=UMFColumnDerivation(candidates=[
+                    DerivationCandidate(table="cj_detail", column="npi", priority=1)]),
+            )
+        )
+        sql = SQLPlanGenerator().generate_for_table(target, related)
+        assert "AS _debug" in sql
+        assert "AS u_debug" not in sql
+
     def test_left_one_to_many_still_first_records(self):
         target, related = self._corpus(
             cardinality=Cardinality(
