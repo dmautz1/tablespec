@@ -1432,6 +1432,9 @@ class TestCompositeJoinKeysAndFullOuter:
         # must force the join to project billed_amount even though no plain
         # derivation requires it
         target, related = self._corpus()
+        # drop the header's only plain candidate so the join survives PURELY
+        # on the prefixed expression ref
+        target.columns = [c for c in target.columns if c.name != "payor"]
         target.columns.append(
             UMFColumn(
                 name="matched", data_type="BOOLEAN",
@@ -1444,6 +1447,7 @@ class TestCompositeJoinKeysAndFullOuter:
         )
         sql = SQLPlanGenerator().generate_for_table(target, related)
         assert "target.billed_amount AS cj_header__billed_amount" in sql
+        assert "JOIN cj_header" in sql
 
     def test_underscore_canonical_name_emits_physical_column(self):
         target, related = self._corpus()

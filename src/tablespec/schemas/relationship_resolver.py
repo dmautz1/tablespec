@@ -506,6 +506,14 @@ class RelationshipResolver:
                         if tbl not in instances:
                             instances[tbl] = set()
                         instances[tbl].add(inst)
+                    # A verbatim expression naming alias__col contributes the
+                    # OWNER table too — without this, a table referenced ONLY
+                    # through prefixed refs loses its join entirely
+                    if cand.expression:
+                        for m in re.finditer(r"\b(\w+?)__\w+", cand.expression):
+                            owner = m.group(1)
+                            if owner in self.all_umfs and owner not in instances:
+                                instances[owner] = {None}
 
         return instances
 
