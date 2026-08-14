@@ -739,10 +739,12 @@ class SQLPlanGenerator:
                     col_names.extend(
                         self._extract_columns_from_expression(cand.expression)
                     )
-                    # Prefixed refs (alias__col) in verbatim expressions
-                    # attribute to their REAL table so the join projects them
-                    # (an intermediate-attributed expression naming
-                    # silver_inventory__CPTCode requires silver_inventory.CPTCode)
+                # Prefixed refs (alias__col) in verbatim expressions attribute
+                # to their REAL table so the join projects them — regardless of
+                # whether the candidate also names a column (an intermediate-
+                # attributed expression naming silver_inventory__CPTCode
+                # requires silver_inventory.CPTCode)
+                if cand.expression:
                     for owner, owned_col in self._extract_prefixed_expression_columns(
                         cand.expression
                     ):

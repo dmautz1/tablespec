@@ -1437,7 +1437,7 @@ class TestCompositeJoinKeysAndFullOuter:
                 name="matched", data_type="BOOLEAN",
                 derivation=UMFColumnDerivation(candidates=[
                     DerivationCandidate(
-                        table="intermediate", priority=1,
+                        table="intermediate", priority=1, column="charge",
                         expression="CASE WHEN base.charge = base.cj_header__billed_amount THEN TRUE ELSE FALSE END",
                     )]),
             )
