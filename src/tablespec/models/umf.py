@@ -1325,6 +1325,15 @@ class OutgoingRelationship(BaseModel):
         "target_expression (target side; bare tokens qualified against the "
         "joined table). Consumed by direct joins only.",
     )
+    table_instance: str | None = Field(
+        default=None,
+        description="Bind this relationship to ONE named instance of the target "
+        "table (the alias derivation candidates reference via their own "
+        "table_instance). Lets the same table join twice with DIFFERENT keys — "
+        "each instance-bound relationship supplies its own "
+        "source/target/conditions. Unbound relationships apply to every "
+        "instance the candidates declare.",
+    )
 
     def parse_table_reference(self) -> "TableReference":
         """Parse target_table into TableReference with optional pipeline qualification.

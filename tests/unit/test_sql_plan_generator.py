@@ -1474,6 +1474,93 @@ class TestCompositeJoinKeysAndFullOuter:
 
 
 # ---------------------------------------------------------------------------
+# TestInstanceBoundRelationships
+# ---------------------------------------------------------------------------
+
+
+class TestInstanceBoundRelationships:
+    """A relationship with table_instance joins ONE named instance with its
+    own keys — the same table can join twice with different keys."""
+
+    def test_same_table_joins_twice_with_different_keys(self):
+        rules = _make_umf(
+            "ib_rules",
+            [
+                UMFColumn(name="determination", data_type="VARCHAR"),
+                UMFColumn(name="stage", data_type="VARCHAR"),
+                UMFColumn(name="rank", data_type="VARCHAR"),
+            ],
+            primary_key=["rank"],
+        )
+        base = _make_umf(
+            "ib_base",
+            [
+                UMFColumn(name="id", data_type="VARCHAR"),
+                UMFColumn(name="determination", data_type="VARCHAR"),
+                UMFColumn(name="stage", data_type="VARCHAR"),
+            ],
+            primary_key=["id"],
+            relationships=Relationships(
+                summary=RelationshipSummary(
+                    total_relationships=2, total_incoming=0,
+                    total_outgoing=2, hub_score=5.0,
+                ),
+                outgoing=[
+                    OutgoingRelationship(
+                        target_table="ib_rules", table_instance="by_det",
+                        source_column="determination", target_column="determination",
+                        type="foreign_to_primary", confidence=1.0,
+                    ),
+                    OutgoingRelationship(
+                        target_table="ib_rules", table_instance="by_stage",
+                        source_column="stage", target_column="stage",
+                        type="foreign_to_primary", confidence=1.0,
+                    ),
+                ],
+            ),
+        )
+        target = _make_umf(
+            "ib_out",
+            [
+                UMFColumn(
+                    name="id", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="ib_base", column="id", priority=1)]),
+                ),
+                UMFColumn(
+                    name="det_rank", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(
+                            table="ib_rules", table_instance="by_det",
+                            column="rank", priority=1,
+                            join_filter="stage = '(any)'")]),
+                ),
+                UMFColumn(
+                    name="stage_rank", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(
+                            table="ib_rules", table_instance="by_stage",
+                            column="rank", priority=1)]),
+                ),
+            ],
+        )
+        target.metadata = UMFMetadata(base_table="ib_base")
+        sql = SQLPlanGenerator().generate_for_table(
+            target, {"ib_base": base, "ib_rules": rules}
+        )
+        # two distinct joins of the same table, each with its OWN key
+        assert "ON base.determination = target.determination" in sql
+        assert "ON base.stage = target.stage" in sql
+        assert "AND stage = '(any)'" in sql or "AND target.stage = '(any)'" in sql
+        # instance-aliased projections
+        assert "AS by_det__rank" in sql
+        assert "AS by_stage__rank" in sql
+        # mappings reference the instance aliases
+        assert "base.by_det__rank AS det_rank" in sql
+        assert "base.by_stage__rank AS stage_rank" in sql
+
+
+# ---------------------------------------------------------------------------
 # TestScdPlanEmission
 # ---------------------------------------------------------------------------
 

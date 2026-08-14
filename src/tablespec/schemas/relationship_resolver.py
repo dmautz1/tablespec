@@ -219,8 +219,14 @@ class RelationshipResolver:
             if alternative_joins and base_table:
                 self._validate_alternative_joins(base_table, tgt, alternative_joins)
 
-            # Create JoinInfo for each instance of this table
-            instances = contributing_instances.get(tgt, {None})
+            # Create JoinInfo for each instance of this table. An
+            # instance-bound relationship applies ONLY to its own instance —
+            # the mechanism for joining one table twice with different keys.
+            rel_instance = rel.get("table_instance")
+            if rel_instance:
+                instances = {rel_instance}
+            else:
+                instances = contributing_instances.get(tgt, {None})
             for inst in sorted(instances, key=lambda x: (x is None, x or "")):
                 key = (tgt, inst)
                 candidate = JoinInfo(
@@ -362,6 +368,8 @@ class RelationshipResolver:
                     d["join_type"] = rel.join_type
                 if rel.join_conditions:
                     d["join_conditions"] = [dict(c) for c in rel.join_conditions]
+                if rel.table_instance:
+                    d["table_instance"] = rel.table_instance
                 result.append(d)
             return result
         return []
