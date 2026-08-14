@@ -739,6 +739,14 @@ class SQLPlanGenerator:
                     col_names.extend(
                         self._extract_columns_from_expression(cand.expression)
                     )
+                    # Prefixed refs (alias__col) in verbatim expressions
+                    # attribute to their REAL table so the join projects them
+                    # (an intermediate-attributed expression naming
+                    # silver_inventory__CPTCode requires silver_inventory.CPTCode)
+                    for owner, owned_col in self._extract_prefixed_expression_columns(
+                        cand.expression
+                    ):
+                        required.setdefault(owner, set()).add(owned_col)
 
                 for col_name in col_names:
                     _, bare_name = _parse_table_ref(cand.table)
@@ -747,6 +755,21 @@ class SQLPlanGenerator:
                         required.setdefault(cand.table, set()).add(col_name)
 
         return required
+
+    @staticmethod
+    def _extract_prefixed_expression_columns(expression: str) -> list[tuple[str, str]]:
+        """(table, column) pairs for every ``alias__col`` reference in *expression*."""
+        try:
+            parsed = sqlglot.parse_one(expression, read="spark")
+        except Exception:  # noqa: BLE001 - best-effort projection helper
+            return []
+        pairs: list[tuple[str, str]] = []
+        for col in parsed.find_all(exp.Column):
+            if "__" in col.name:
+                owner, _, owned = col.name.rpartition("__")
+                if owner and owned:
+                    pairs.append((owner, owned))
+        return pairs
 
     def _extract_columns_from_expression(self, expression: str) -> list[str]:
         """Extract column references from a SQL expression.

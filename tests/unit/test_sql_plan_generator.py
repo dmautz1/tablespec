@@ -1427,6 +1427,24 @@ class TestCompositeJoinKeysAndFullOuter:
         # first_record dedup would wrap the header in a ROW_NUMBER CTE
         assert "First Record" not in sql
 
+    def test_prefixed_intermediate_refs_reach_join_projection(self):
+        # a verbatim intermediate expression naming cj_header__billed_amount
+        # must force the join to project billed_amount even though no plain
+        # derivation requires it
+        target, related = self._corpus()
+        target.columns.append(
+            UMFColumn(
+                name="matched", data_type="BOOLEAN",
+                derivation=UMFColumnDerivation(candidates=[
+                    DerivationCandidate(
+                        table="intermediate", priority=1,
+                        expression="CASE WHEN base.charge = base.cj_header__billed_amount THEN TRUE ELSE FALSE END",
+                    )]),
+            )
+        )
+        sql = SQLPlanGenerator().generate_for_table(target, related)
+        assert "target.billed_amount AS cj_header__billed_amount" in sql
+
     def test_left_one_to_many_still_first_records(self):
         target, related = self._corpus(
             cardinality=Cardinality(
