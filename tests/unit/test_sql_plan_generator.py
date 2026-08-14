@@ -1492,6 +1492,72 @@ class TestCompositeJoinKeysAndFullOuter:
 
 
 # ---------------------------------------------------------------------------
+# TestAggregateSourceBase
+# ---------------------------------------------------------------------------
+
+
+class TestAggregateSourceBase:
+    """base_table_strategy: aggregate_source — the base view IS a GROUP BY
+    over the source (aggregation-native tables like a payments rollup)."""
+
+    def _corpus(self):
+        src = _make_umf(
+            "agg_payments",
+            [
+                UMFColumn(name="service_line_id", data_type="VARCHAR"),
+                UMFColumn(name="entry_dt", data_type="DATE"),
+                UMFColumn(name="amount", data_type="DECIMAL"),
+                UMFColumn(name="gluid", data_type="VARCHAR"),
+            ],
+        )
+        target = _make_umf(
+            "agg_rollup",
+            [
+                UMFColumn(
+                    name="service_line_id", data_type="VARCHAR", position="1",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="agg_payments", column="service_line_id", priority=1)]),
+                ),
+                UMFColumn(
+                    name="total_amount", data_type="DECIMAL", position="2",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="agg_payments", priority=1,
+                                            expression="SUM(amount)")]),
+                ),
+                UMFColumn(
+                    name="first_payment", data_type="DECIMAL", position="3",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="agg_payments", priority=1,
+                                            expression="MIN_BY(amount, STRUCT(entry_dt, gluid))")]),
+                ),
+            ],
+            primary_key=["service_line_id"],
+        )
+        target.metadata = UMFMetadata(
+            base_table="agg_payments", base_table_strategy="aggregate_source"
+        )
+        return target, {"agg_payments": src}
+
+    def test_group_by_base_view_and_passthrough_assembly(self):
+        target, related = self._corpus()
+        sql = SQLPlanGenerator().generate_for_table(target, related)
+        assert "GROUP BY" in sql
+        assert "SUM(amount) AS total_amount" in sql
+        assert "MIN_BY(amount, STRUCT(entry_dt, gluid)) AS first_payment" in sql
+        # final assembly passes the aggregates through, no re-derivation
+        assert "base.total_amount AS total_amount" in sql
+        assert "base.first_payment AS first_payment" in sql
+        assert "base.service_line_id AS service_line_id" in sql
+
+    def test_requires_group_key(self):
+        target, related = self._corpus()
+        # strip the plain candidate -> no group key -> hard error
+        target.columns = [c for c in target.columns if c.name != "service_line_id"]
+        with pytest.raises(ValueError, match="group key"):
+            SQLPlanGenerator().generate_for_table(target, related)
+
+
+# ---------------------------------------------------------------------------
 # TestInstanceBoundRelationships
 # ---------------------------------------------------------------------------
 

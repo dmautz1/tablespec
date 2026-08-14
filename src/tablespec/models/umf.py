@@ -1499,12 +1499,15 @@ class UMFMetadata(BaseModel):
         default=None, description="Last modified timestamp of the source Excel file"
     )
     base_table_strategy: (
-        Literal["union_sources", "unpivot", "union_branches"] | None
+        Literal["union_sources", "unpivot", "union_branches", "aggregate_source"] | None
     ) = Field(
         default=None,
         description="Strategy for building base table. 'union_sources': build a "
         "key-only universe from UNION of source_tables. 'unpivot': UNPIVOT the base "
-        "table's unpivot_columns into rows. 'union_branches': UNION the base_table "
+        "table's unpivot_columns into rows. 'aggregate_source': the base view IS a "
+        "GROUP BY over base_table — plain candidates become the group key(s), "
+        "expression candidates must be aggregates, projected under their target "
+        "names. 'union_branches': UNION the base_table "
         "with union_base_tables (falling back to source_tables), each branch "
         "projecting the target column set through its own derivation candidates.",
     )

@@ -609,6 +609,16 @@ class SQLPlanGenerator:
                     table_umf, base_table, join_sequence
                 )
             )
+        elif base_table_strategy == "aggregate_source":
+            if not base_table:
+                msg = (
+                    f"base_table_strategy 'aggregate_source' on {table_name} "
+                    "requires metadata.base_table"
+                )
+                raise ValueError(msg)
+            sections.append(
+                self._generate_aggregate_source_base_view(table_umf, base_table)
+            )
         elif base_table:
             sections.append(
                 self._generate_base_view(
@@ -939,6 +949,70 @@ FROM {resolved_table}{where_clause};"""
         if not metadata:
             return []
         return list(metadata.union_base_tables or metadata.source_tables or [])
+
+    def _generate_aggregate_source_base_view(
+        self, table_umf: UMF, base_table: str
+    ) -> str:
+        """``disposition_base`` as a GROUP BY over *base_table*.
+
+        The aggregation IS the table (aggregation-native, e.g. a per-key
+        payments rollup): plain candidates over the base become the group
+        key(s); expression candidates must be aggregate expressions and are
+        projected under their target (physical) names. Every projected name is
+        registered as a passthrough so final assembly emits ``base.<name>``.
+        """
+        resolved_table = self._resolve_table_name(base_table)
+        _, bare_base = _parse_table_ref(base_table)
+
+        group_keys: list[str] = []   # (source_col AS target_name) pairs
+        projections: list[str] = []
+        for col_def in _output_ordered_columns(table_umf.columns):
+            out_name = (
+                col_def.canonical_name
+                if (col_def.canonical_name or "").startswith("_")
+                else col_def.name
+            )
+            if not col_def.derivation or not col_def.derivation.candidates:
+                continue
+            cand = col_def.derivation.candidates[0]
+            cand_bare = _parse_table_ref(cand.table)[1] if cand.table else None
+            if cand_bare != bare_base:
+                msg = (
+                    f"aggregate_source: column {out_name} derives from "
+                    f"{cand.table!r} — every column must derive from the base "
+                    f"table {base_table!r}"
+                )
+                raise ValueError(msg)
+            if cand.expression:
+                expr = self._substitute_template_vars(cand.expression.strip())
+                projections.append(f"{expr} AS {out_name}")
+            elif cand.column:
+                key_expr = (
+                    cand.column if cand.column == out_name
+                    else f"{cand.column} AS {out_name}"
+                )
+                group_keys.append(key_expr)
+                projections.append(key_expr)
+            self._union_branch_columns.add(out_name)
+
+        if not group_keys:
+            msg = (
+                f"aggregate_source on {table_umf.table_name}: at least one "
+                "plain (non-expression) candidate is required as the group key"
+            )
+            raise ValueError(msg)
+
+        group_by = ",\n  ".join(k.split(" AS ")[0] for k in group_keys)
+        column_list = ",\n  ".join(projections)
+        return f"""-- ============================================================================
+-- STEP 0: Aggregate base view over {base_table} (aggregation-native)
+-- ============================================================================
+CREATE OR REPLACE TEMPORARY VIEW disposition_base AS
+SELECT
+  {column_list}
+FROM {resolved_table}
+GROUP BY
+  {group_by};"""
 
     def _generate_union_branch_base_view(
         self,
