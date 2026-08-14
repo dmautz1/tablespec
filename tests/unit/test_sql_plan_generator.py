@@ -1332,6 +1332,113 @@ class TestExpressionJoinKeys:
 
 
 # ---------------------------------------------------------------------------
+# TestCompositeJoinKeysAndFullOuter
+# ---------------------------------------------------------------------------
+
+
+class TestCompositeJoinKeysAndFullOuter:
+    """relationships.outgoing join_conditions append AND-ed equalities to the
+    direct-join ON clause; join_type full_outer emits FULL OUTER JOIN and
+    forces the direct strategy (fan-out preserved) despite 1:N cardinality."""
+
+    def _corpus(self, *, join_type=None, cardinality=None):
+        detail = _make_umf(
+            "cj_detail",
+            [
+                UMFColumn(name="incident_id", data_type="VARCHAR"),
+                UMFColumn(name="npi", data_type="VARCHAR"),
+                UMFColumn(name="charge", data_type="DECIMAL"),
+            ],
+            primary_key=["incident_id"],
+            relationships=Relationships(
+                summary=RelationshipSummary(
+                    total_relationships=1, total_incoming=0,
+                    total_outgoing=1, hub_score=5.0,
+                ),
+                outgoing=[
+                    OutgoingRelationship(
+                        target_table="cj_header",
+                        source_column="incident_id",
+                        target_column="incident_id",
+                        join_type=join_type,
+                        join_conditions=[
+                            {"source_column": "npi", "target_column": "npi"},
+                            {"source_expression": "LOWER(charge)",
+                             "target_expression": "LOWER(billed_amount)"},
+                        ],
+                        cardinality=cardinality,
+                        type="foreign_to_primary",
+                        confidence=1.0,
+                    ),
+                ],
+            ),
+        )
+        header = _make_umf(
+            "cj_header",
+            [
+                UMFColumn(name="incident_id", data_type="VARCHAR"),
+                UMFColumn(name="npi", data_type="VARCHAR"),
+                UMFColumn(name="billed_amount", data_type="DECIMAL"),
+                UMFColumn(name="payor", data_type="VARCHAR"),
+            ],
+            primary_key=["incident_id"],
+        )
+        target = _make_umf(
+            "cj_lines",
+            [
+                UMFColumn(
+                    name="incident_id", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="cj_detail", column="incident_id", priority=1)]),
+                ),
+                UMFColumn(
+                    name="payor", data_type="VARCHAR",
+                    derivation=UMFColumnDerivation(candidates=[
+                        DerivationCandidate(table="cj_header", column="payor", priority=1)]),
+                ),
+            ],
+        )
+        target.metadata = UMFMetadata(base_table="cj_detail")
+        return target, {"cj_detail": detail, "cj_header": header}
+
+    def test_join_conditions_append_anded_equalities(self):
+        target, related = self._corpus()
+        sql = SQLPlanGenerator().generate_for_table(target, related)
+        assert "ON base.incident_id = target.incident_id" in sql
+        assert "AND base.npi = target.npi" in sql
+        assert "AND LOWER(base.charge) = LOWER(target.billed_amount)" in sql
+
+    def test_full_outer_join_type_emits_keyword(self):
+        target, related = self._corpus(join_type="full_outer")
+        sql = SQLPlanGenerator().generate_for_table(target, related)
+        assert "FULL OUTER JOIN" in sql
+        assert "LEFT JOIN cj_header" not in sql
+
+    def test_full_outer_forces_direct_despite_one_to_many(self):
+        target, related = self._corpus(
+            join_type="full_outer",
+            cardinality=Cardinality(
+                notation="1:N", type="one_to_many", mandatory=False,
+                source_multiplicity="1", target_multiplicity="*",
+            ),
+        )
+        sql = SQLPlanGenerator().generate_for_table(target, related)
+        assert "FULL OUTER JOIN" in sql
+        # first_record dedup would wrap the header in a ROW_NUMBER CTE
+        assert "First Record" not in sql
+
+    def test_left_one_to_many_still_first_records(self):
+        target, related = self._corpus(
+            cardinality=Cardinality(
+                notation="1:N", type="one_to_many", mandatory=False,
+                source_multiplicity="1", target_multiplicity="*",
+            ),
+        )
+        sql = SQLPlanGenerator().generate_for_table(target, related)
+        assert "First Record" in sql
+
+
+# ---------------------------------------------------------------------------
 # TestScdPlanEmission
 # ---------------------------------------------------------------------------
 

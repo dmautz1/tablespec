@@ -1309,6 +1309,22 @@ class OutgoingRelationship(BaseModel):
         "emits both joins. Consumed by direct joins only; mutually exclusive with "
         "source_expression/target_expression.",
     )
+    join_type: str | None = Field(
+        default=None,
+        description="Join keyword for this relationship: 'left' (default), "
+        "'inner', or 'full_outer'. full_outer forces the direct-join strategy "
+        "(fan-out preserved on both sides) regardless of cardinality notation. "
+        "Consumed by direct joins only.",
+    )
+    join_conditions: list[dict[str, str]] | None = Field(
+        default=None,
+        description="Additional AND-ed equality conditions appended to the "
+        "direct-join ON clause (composite keys). Each dict gives one side pair: "
+        "source_column or source_expression (base side; bare tokens qualified "
+        "against the accumulated base view) and target_column or "
+        "target_expression (target side; bare tokens qualified against the "
+        "joined table). Consumed by direct joins only.",
+    )
 
     def parse_table_reference(self) -> "TableReference":
         """Parse target_table into TableReference with optional pipeline qualification.

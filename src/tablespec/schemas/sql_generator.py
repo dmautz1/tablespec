@@ -877,6 +877,17 @@ FROM {resolved_table}{where_clause};"""
                 candidates.append(join_via.get("source_key"))
             for alt in join_info.get("alternative_joins") or []:
                 candidates.append(alt.get("source_column"))
+            # composite-key conditions: plain base columns plus every column
+            # referenced by a base-side expression must reach the base view
+            for cond in join_info.get("join_conditions") or []:
+                candidates.append(cond.get("source_column"))
+                cond_expr = cond.get("source_expression")
+                if cond_expr:
+                    try:
+                        parsed = sqlglot.parse_one(cond_expr, read="spark")
+                        candidates.extend(c.name for c in parsed.find_all(exp.Column))
+                    except Exception:  # noqa: BLE001 - projection best-effort
+                        pass
             for col in candidates:
                 if col and col not in cols:
                     cols.append(col)
@@ -2096,8 +2107,12 @@ WHERE rn = 1;"""
         all_selections = base_column_selections + target_column_selections
         column_list = ",\n  ".join(all_selections)
 
-        join_type = join_info.get("join_type", "left").upper()
-        join_clause = f"{join_type} JOIN"
+        join_type = join_info.get("join_type", "left").lower()
+        join_clause = {
+            "left": "LEFT JOIN",
+            "inner": "INNER JOIN",
+            "full_outer": "FULL OUTER JOIN",
+        }.get(join_type, f"{join_type.upper()} JOIN")
 
         step_label = (
             f"{target_table} as {table_alias}" if table_instance else target_table
@@ -2140,6 +2155,26 @@ FROM {prev_view} base
             else f"target.{target_col}"
         )
         on_clause = f"{left_key} = {right_key}"
+        # Composite keys: extra AND-ed equalities, each side rewritten like the
+        # primary key pair (base side against the accumulated view, target side
+        # against the joined table)
+        for cond in join_info.get("join_conditions") or []:
+            cond_src = cond.get("source_expression")
+            cond_left = (
+                self._rewrite_join_filter(
+                    cond_src, target_table, alias="base",
+                    columns=list(self._accumulated_columns),
+                )
+                if cond_src
+                else f"base.{cond['source_column']}"
+            )
+            cond_tgt = cond.get("target_expression")
+            cond_right = (
+                self._rewrite_join_filter(cond_tgt, target_table)
+                if cond_tgt
+                else f"target.{cond['target_column']}"
+            )
+            on_clause += f" AND {cond_left} = {cond_right}"
         if join_filter:
             rewritten_filter = self._rewrite_join_filter(join_filter, target_table)
             on_clause += f" AND {rewritten_filter}"
