@@ -2918,12 +2918,32 @@ LEFT JOIN {agg_view_name} agg
         metadata = table_umf.metadata
         final_filter = None
         dedup_select = None
+        qualify_clause = ""
         if metadata:
             if metadata.final_filter:
                 final_filter = self._substitute_template_vars(
                     metadata.final_filter.strip()
                 )
-            dedup_select = self._final_dedup_select_clause(metadata)
+            if metadata.final_dedup == "latest":
+                keys = metadata.final_dedup_keys or list(table_umf.primary_key or [])
+                if not keys or not metadata.final_dedup_order_by:
+                    msg = (
+                        f"{table_name}: final_dedup 'latest' requires "
+                        "final_dedup_keys (or primary_key) and final_dedup_order_by"
+                    )
+                    raise ValueError(msg)
+                # NULL-keyed rows pass through: identity cannot be asserted
+                # without a key, and PARTITION BY would otherwise collapse
+                # ALL null-key rows into a single survivor
+                null_guard = " OR ".join(f"{k} IS NULL" for k in keys)
+                partition = ", ".join(keys)
+                qualify_clause = (
+                    f"\nQUALIFY ({null_guard} OR ROW_NUMBER() OVER "
+                    f"(PARTITION BY {partition} "
+                    f"ORDER BY {metadata.final_dedup_order_by}) = 1)"
+                )
+            else:
+                dedup_select = self._final_dedup_select_clause(metadata)
 
         if not base_table:
             inner = f"SELECT\n{column_mappings_str}"
@@ -2938,7 +2958,7 @@ CREATE OR REPLACE TEMPORARY VIEW {table_name} AS"""
 -- ============================================================================
 CREATE OR REPLACE TEMPORARY VIEW {table_name} AS"""
 
-        if final_filter is None and dedup_select is None:
+        if final_filter is None and dedup_select is None and not qualify_clause:
             return f"{header}\n{inner};"
 
         outer_select = dedup_select or "SELECT *"
@@ -2947,7 +2967,7 @@ CREATE OR REPLACE TEMPORARY VIEW {table_name} AS"""
 {outer_select}
 FROM (
 {inner}
-) _final{where_clause};"""
+) _final{where_clause}{qualify_clause};"""
 
     @staticmethod
     def _final_dedup_select_clause(metadata: Any) -> str | None:

@@ -1579,12 +1579,27 @@ class UMFMetadata(BaseModel):
         description="Deduplication strategy for generated tables. "
         "'latest': deduplicate on primary_key, keeping the row with the most recent load date.",
     )
-    final_dedup: Literal["distinct"] | None = Field(
+    final_dedup: Literal["distinct", "latest"] | None = Field(
         default=None,
         description="Final-assembly deduplication strategy (runs after all joins). "
         "'distinct': emit SELECT DISTINCT so exact-duplicate rows produced by join "
         "fan-out are collapsed. Use when a joined table has higher cardinality than "
-        "the base and you don't need every joined row.",
+        "the base and you don't need every joined row. "
+        "'latest': enforce the table's declared grain with QUALIFY ROW_NUMBER() "
+        "OVER (PARTITION BY final_dedup_keys ORDER BY final_dedup_order_by) = 1 — "
+        "rows with a NULL in any dedup key pass through undeduplicated (identity "
+        "cannot be asserted without a key).",
+    )
+    final_dedup_keys: list[str] | None = Field(
+        default=None,
+        description="Grain keys for final_dedup 'latest' (output column names). "
+        "Defaults to the table's primary_key.",
+    )
+    final_dedup_order_by: str | None = Field(
+        default=None,
+        description="ORDER BY expression list for final_dedup 'latest' — decides "
+        "which duplicate survives (e.g. 'ReceivedFromCustomer DESC'). Required "
+        "with final_dedup 'latest'.",
     )
     scd: ScdConfig | None = Field(
         default=None,
